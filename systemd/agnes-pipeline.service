@@ -1,0 +1,18 @@
+[Unit]
+Description=Agnes Video Pipeline - Discord Bot
+After=network.target nginx.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/sakana
+Environment=PYTHONPATH=/root/sakana
+EnvironmentFile=/root/sakana/config/.env
+ExecStart=/root/sakana/venv/bin/python -m bot.main
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/sakana/logs/bot.log
+StandardError=append:/root/sakana/logs/bot.log
+
+[Install]
+WantedBy=multi-user.target

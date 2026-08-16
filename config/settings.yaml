@@ -1,0 +1,68 @@
+app:
+  name: "Agnes Video Pipeline"
+  version: "1.0.0"
+  environment: "production"
+
+video:
+  width: 1080
+  height: 1920
+  fps: 24
+  codec: "libx264"
+  audio_codec: "aac"
+  preset: "medium"
+  crf: 23
+  output_format: "mp4"
+  scene_duration: 10
+  max_scenes: 5
+
+agnes:
+  base_url: "https://apihub.agnes-ai.com/v1"
+  chat_model: "agnes-2.0-flash"
+  image_model: "agnes-image-2.1-flash"
+  video_model: "agnes-video-v2.0"
+  rate_limit_delay: 60
+  image_rate_limit_delay: 3
+  max_retries: 3
+
+tts:
+  engine: "kokoro"
+  model_path: "/root/sakana/models/kokoro/kokoro-v1.0.onnx"
+  voices_path: "/root/sakana/models/kokoro/voices-v1.0.bin"
+  default_voice: "af_bella"
+  speed: 1.0
+  available_voices:
+    - af_bella
+    - af_heart
+    - af_nicole
+    - af_sarah
+    - bf_emma
+
+captions:
+  enabled: true
+  font: "Arial-Bold"
+  fontsize: 42
+  color: "white"
+  stroke_color: "black"
+  stroke_width: 2
+  position: "center"
+  max_lines: 2
+  line_length: 20
+
+seo:
+  channel_name: ""
+  channel_url: ""
+  default_tags:
+    - "shorts"
+    - "story"
+  default_hashtags:
+    - "#Shorts"
+
+hosting:
+  type: "nginx"
+  base_url: ""
+  public_directory: "/root/sakana/output"
+
+limits:
+  max_jobs_queued: 10
+  max_script_length: 5000
+  cleanup_temp_after_hours: 24

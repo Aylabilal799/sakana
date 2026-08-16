@@ -1,0 +1,84 @@
+# Secrets
+.env
+.env.*
+!.env.example
+config/.env
+config/*.env
+*.pem
+*.key
+*.token
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Large models
+models/
+*.onnx
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+
+# Generated jobs and media
+output/
+temp/
+jobs/
+logs/
+*.mp4
+*.wav
+*.mp3
+*.aac
+*.png
+*.jpg
+*.jpeg
+
+# Runtime databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Private configuration
+config/.env
+.env
+.env.*
+
+# Runtime and generated files
+venv/
+models/
+jobs/
+logs/
+output/
+temp/
+
+# Generated media and databases
+*.mp4
+*.wav
+*.mp3
+*.onnx
+*.bin
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

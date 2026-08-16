@@ -1,0 +1,23 @@
+=== Python ===
+Python 3.13.5
+
+=== Port 6464 ===
+LISTEN 0      511          0.0.0.0:6464       0.0.0.0:*    users:(("nginx",pid=477478,fd=5),("nginx",pid=477477,fd=5),("nginx",pid=477476,fd=5),("nginx",pid=477475,fd=5),("nginx",pid=477474,fd=5))
+
+=== Nginx status ===
+active
+
+=== Bot status ===
+active
+
+=== Local HTTP test ===
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0   146    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+HTTP/1.1 403 Forbidden
+Server: nginx
+Date: Sun, 16 Aug 2026 16:44:58 GMT
+Content-Type: text/html
+Content-Length: 146
+Connection: keep-alive
+

@@ -1,0 +1,10 @@
+{
+  "name": "Elara",
+  "description": "A young woman with long auburn hair, green eyes, wearing a dark blue cloak.",
+  "prompt_prefix": "A young woman with long auburn hair and green eyes",
+  "style": "cinematic realistic",
+  "negative_prompt": "multiple people, different person, changed face, inconsistent appearance",
+  "video_mode": "ti2vid",
+  "chaining_mode": "keyframes",
+  "reference_image": "/root/sakana/characters/default/reference_image.png"
+}
