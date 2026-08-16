@@ -1,19 +1,12 @@
-# /etc/systemd/system/agnes-pipeline.service
-[Unit]
-Description=Agnes Video Pipeline - Discord Bot
-After=network.target nginx.service
+● agnes-pipeline.service - Agnes Video Pipeline - Discord Bot
+     Loaded: loaded (/etc/systemd/system/agnes-pipeline.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-08-16 19:07:26 CEST; 2min 44s ago
+ Invocation: 67312e98058a4cc396b6178738d1350f
+   Main PID: 505474 (python)
+      Tasks: 6 (limit: 9446)
+     Memory: 73.9M (peak: 74M)
+        CPU: 1.084s
+     CGroup: /system.slice/agnes-pipeline.service
+             └─505474 /root/sakana/venv/bin/python -m bot.main
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/sakana
-Environment=PYTHONPATH=/root/sakana
-EnvironmentFile=/root/sakana/config/.env
-ExecStart=/root/sakana/venv/bin/python -m bot.main
-Restart=always
-RestartSec=10
-StandardOutput=file:/root/sakana/logs/bot.log
-StandardError=file:/root/sakana/logs/bot.log
-
-[Install]
-WantedBy=multi-user.target
+Aug 16 19:07:26 v2202602266367432447 systemd[1]: Started agnes-pipeline.service - Agnes Video Pipeline - Discord Bot.
