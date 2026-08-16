@@ -110,9 +110,25 @@ class JobQueue:
             embed.add_field(name="🏷️ Tags", value=", ".join(yt.get("tags",[])[:10]), inline=False)
             embed.add_field(name="#️⃣ Hashtags", value=" ".join(yt.get("hashtags",[])), inline=False)
             await ch.send(embed=embed)
-            vp = meta.get("video",{}).get("path")
-            if vp and Path(vp).exists() and Path(vp).stat().st_size < 25*1024*1024:
-                await ch.send(file=discord.File(vp))
+            vp = meta.get("video", {}).get("path")
+            if vp and Path(vp).exists():
+                file_size = Path(vp).stat().st_size
+                max_discord_size = 9 * 1024 * 1024
+
+                if file_size <= max_discord_size:
+                    try:
+                        await ch.send(file=discord.File(vp))
+                    except discord.HTTPException as e:
+                        logger.warning(
+                            f"Discord attachment failed for {job_id}: {e}. "
+                            f"Public URL was already sent: {url}"
+                        )
+                else:
+                    logger.info(
+                        f"Skipping Discord attachment for {job_id}: "
+                        f"{file_size / 1024 / 1024:.1f} MiB exceeds safe limit. "
+                        f"Public URL sent: {url}"
+                    )
         except Exception as e:
             logger.error(f"Send done failed: {e}")
 
