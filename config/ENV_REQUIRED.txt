@@ -1,0 +1,38 @@
+# ── Mia AI Video Pipeline — Environment Variables ───────────────────
+
+# Required
+DISCORD_BOT_TOKEN=your_discord_bot_token_here
+DISCORD_GUILD_ID=1535713562817859785
+DISCORD_OWNER_ID=your_discord_user_id
+
+# File hosting (existing — do NOT change)
+VIDEO_HOST_URL=http://152.53.124.111:6464/videos
+OUTPUT_DIRECTORY=/var/www/agnes-videos
+PROJECT_DIRECTORY=/root/sakana
+
+# Job database (existing)
+JOB_DATABASE=/root/sakana/jobs/queue.db
+
+# ── NEW: YouTube Autopilot ──────────────────────────────────────────
+
+# Set to "true" to enable automatic video generation and YouTube upload
+YOUTUBE_AUTO_POST=false
+
+# YouTube OAuth credentials (use existing paths or copy to /root/sakana/)
+YOUTUBE_CLIENT_SECRETS_FILE=/root/deepseekyt/youtube_client_secret.json
+YOUTUBE_TOKEN_FILE=/root/deepseekyt/youtube_token.json
+
+# YouTube upload settings
+YOUTUBE_DEFAULT_PRIVACY=private
+YOUTUBE_CATEGORY_ID=22
+YOUTUBE_MAX_UPLOAD_ATTEMPTS=5
+YOUTUBE_OAUTH_PORT=9219
+
+# Discord channel for autopilot notifications (can be same as /mia channel)
+AUTOPILOT_NOTIFICATION_CHANNEL_ID=your_channel_id_here
+
+# Autopilot schedule (PKT times — hardcoded: 21:00, 02:00, 05:00)
+# These are fixed in code but listed here for reference:
+#   9:00 PM PKT  →  16:00 UTC
+#   2:00 AM PKT  →  21:00 UTC
+#   5:00 AM PKT  →  00:00 UTC

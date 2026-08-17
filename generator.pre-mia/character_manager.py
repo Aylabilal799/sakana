@@ -24,7 +24,7 @@ DEFAULT_MIA_CONFIG = {
         "delicate gold pendant necklace"
     ),
     "prompt_prefix": (
-        "Mia, the exact same 24-year-old adult woman, "
+        "Mia, the exact same 24-year-old adult woman from the identity reference image, "
         "oval face, softly defined cheekbones, warm hazel almond-shaped eyes, straight petite nose, "
         "naturally full lips, light warm olive skin with subtle freckles, long dark-chestnut wavy hair "
         "parted slightly left, slim natural build"
@@ -41,7 +41,7 @@ DEFAULT_MIA_CONFIG = {
     "voice": "af_bella",
     "reference_image": "/root/sakana/characters/mia/reference_image.png",
     "video_mode": "ti2vid",
-    "scene_image_strategy": "text_identity",
+    "scene_image_strategy": "reference_img2img",
 }
 
 
@@ -116,70 +116,33 @@ class CharacterManager:
             f"background, no props, no other people. {self.config['style']}. This image defines her permanent identity."
         )
 
-    def scene_keyframe_prompt(self, scene: Dict, scene_state: Optional[Dict] = None) -> str:
-        outfit = self.config.get("default_outfit", "")
-        if scene_state:
-            outfit = scene_state.get("outfit") or outfit
-
+    def scene_keyframe_prompt(self, scene: Dict, outfit: Optional[str] = None) -> str:
+        outfit = outfit or self.config.get("default_outfit", "")
         shot = scene.get("shot_type", "handheld medium vlog shot")
         lighting = scene.get("lighting", "natural warm realistic light")
         visual = scene.get("visual_prompt") or scene.get("narration", "Mia records her daily vlog")
         expression = scene.get("expression", "natural emotionally appropriate expression")
-        location = scene.get("location", "the current location")
-        emotional_state = scene.get("emotional_state", "curious")
-
-        # Build object description
-        objects_desc = ""
-        objects_visible = scene.get("objects_visible", [])
-        objects_held = scene.get("objects_held", [])
-        if objects_visible or objects_held:
-            obj_parts = []
-            for obj_name in objects_visible:
-                obj_parts.append(f"{obj_name} visible in the scene")
-            for obj_name in objects_held:
-                obj_parts.append(f"Mia holding {obj_name}")
-            if obj_parts:
-                objects_desc = "Objects: " + ", ".join(obj_parts) + ". "
-
-        # Prefer medium shots over extreme close-ups
-        if "extreme" in shot.lower() or "macro" in shot.lower():
-            shot = "medium close-up"
-
-        # Full identity description repeated in every scene prompt
         return (
-            f"{self.config['prompt_prefix']}. "
-            f"She wears {outfit}. "
-            f"Scene: {visual}. Location: {location}. "
-            f"Shot type: {shot}. Expression: {expression}. Emotional state: {emotional_state}. "
-            f"{objects_desc}"
-            f"Lighting: {lighting}. {self.config['style']}. "
+            "Use the supplied reference image as the mandatory identity source. Preserve Mia's exact face, "
+            "facial geometry, hazel eyes, nose, lips, freckles, skin tone, hair color, hairline, age and body proportions. "
+            f"Place that same Mia in this new scene: {visual}. Shot: {shot}. Expression: {expression}. "
+            f"Continuity outfit: {outfit}. Lighting: {lighting}. {self.config['style']}. "
             "Vertical 9:16 composition, fill the entire frame, no borders, no black bars, one Mia only. "
-            "Maintain exact same face, eyes, nose, lips, freckles, skin tone, hair color and age across every scene. "
-            "Do not redesign, beautify, age, or replace her face. "
-            "Do not change her ethnicity, eye color, or hair color. "
-            "Do not introduce additional women or duplicate Mias."
+            "Do not redesign, beautify, age, or replace her face."
         )
 
-    def video_motion_prompt(self, scene: Dict, scene_state: Optional[Dict] = None) -> str:
+    def video_motion_prompt(self, scene: Dict) -> str:
         motion = scene.get("camera_motion", "subtle handheld push-in")
         action = scene.get("action") or scene.get("visual_prompt") or scene.get("narration", "")
-        location = scene.get("location", "the current location")
-        emotional_state = scene.get("emotional_state", "curious")
-
-        objects_desc = ""
-        objects_held = scene.get("objects_held", [])
-        if objects_held:
-            objects_desc = f"Mia is holding: {', '.join(objects_held)}. "
-
         return (
-            f"Animate this exact image of Mia at {location}. {action}. {objects_desc}"
-            f"Camera movement: {motion}. Emotional state: {emotional_state}. "
+            f"Animate this exact image of Mia. {action}. Camera movement: {motion}. "
             "Natural blinking, breathing, subtle hair and clothing movement, realistic influencer vlog behavior. "
             "Keep Mia's face, body, outfit and identity stable in every frame. Avoid face morphing, sudden pose changes, "
             "rubber motion or new people entering. Photorealistic vertical social video, full-frame 9:16."
         )
 
     def get_character_prompt(self, scene_description: str = "") -> str:
+        # Backward-compatible method used by older callers.
         return (
             f"{self.config['prompt_prefix']}, {scene_description}, {self.config['style']}, "
             "same exact Mia identity, one adult woman only"

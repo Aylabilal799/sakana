@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import shutil
 from datetime import datetime, timezone
@@ -10,18 +11,17 @@ from urllib.parse import quote
 from generator.agnes_client import AgnesClient
 from generator.caption_engine import CaptionEngine
 from generator.character_manager import CharacterManager
-from generator.object_manager import ObjectManager
 from generator.seo_generator import SEOGenerator
-from generator.sound_design import SoundDesigner
 from generator.story_planner import StoryPlanner
 from generator.tts_engine import TTSEngine
 from generator.video_assembler import VideoAssembler
-from generator.visual_qa import VisualQA
 
 logger = logging.getLogger(__name__)
 
 
 class VideoPipeline:
+    """Existing pipeline upgraded into one end-to-end Mia influencer workflow."""
+
     def __init__(self, job_id: str, status_callback=None):
         self.job_id = job_id
         self.status_callback = status_callback
@@ -29,6 +29,7 @@ class VideoPipeline:
         self.host_root = Path(os.getenv("OUTPUT_DIRECTORY", "/var/www/agnes-videos"))
         self.public_base = os.getenv("VIDEO_HOST_URL", "http://localhost:6464/videos").rstrip("/")
 
+        # Every job owns all intermediate and persistent assets under jobs/JOB_ID.
         self.job_dir = self.project_dir / "jobs" / job_id
         self.scene_dir = self.job_dir / "scenes"
         self.audio_dir = self.job_dir / "audio"
@@ -44,13 +45,10 @@ class VideoPipeline:
         self.agnes = AgnesClient()
         self.story = StoryPlanner(self.agnes)
         self.character = CharacterManager()
-        self.object_manager = ObjectManager(self.job_dir, self.agnes)
         self.tts = TTSEngine(default_voice=self.character.config.get("voice", "af_bella"))
         self.captions = CaptionEngine()
         self.assembler = VideoAssembler()
         self.seo = SEOGenerator()
-        self.visual_qa = VisualQA(self.character)
-        self.sound_designer = SoundDesigner(self.job_dir)
         self.metadata = {
             "job_id": job_id,
             "status": "PENDING",
@@ -60,8 +58,7 @@ class VideoPipeline:
 
     def run(self, user_prompt: str, genre: str = "auto") -> Dict:
         try:
-            # Phase 1: Story Generation
-            self._update_status("STORY_GENERATING", 5, "🧠 Writing Mia's story with continuity tracking...")
+            self._update_status("STORY_GENERATING", 5, "🧠 Writing Mia's story...")
             plan = self.story.plan(user_prompt)
             if genre and genre not in ("auto", "story"):
                 plan["genre"] = genre
@@ -70,56 +67,33 @@ class VideoPipeline:
             self._write_text(self.job_dir / "script.txt", plan["script"])
             self._write_json(self.job_dir / "story_plan.json", plan)
 
-            # Phase 2: TTS
             self._update_status("TTS_GENERATING", 14, "🎙 Generating Mia's Kokoro voice...")
-            narration_path, audio_duration = self.tts.generate(
+            audio_path, audio_duration = self.tts.generate(
                 plan["script"], str(self.audio_dir / "mia_narration.wav"),
                 voice=self.character.config.get("voice", "af_bella"),
             )
             self.metadata["audio"] = {
-                "path": narration_path,
+                "path": audio_path,
                 "duration": audio_duration,
                 "voice": self.character.config.get("voice", "af_bella"),
             }
 
-            # Phase 3: Character Identity Reference
             self._ensure_reference_image()
             reference_url = self.character.publish_reference()
             self.metadata["character"] = self.character.get_summary()
 
-            # Phase 4: Register Persistent Objects
-            self._update_status("OBJECT_REGISTRATION", 18, "📦 Registering persistent story objects...")
-            self._register_story_objects(plan)
-
-            # Phase 5: Sound Design Plan
-            self._update_status("SOUND_DESIGN", 20, "🎵 Creating sound design plan...")
-            sound_plan = self.sound_designer.generate_sound_plan(plan["scenes"], plan["script"])
-            self.metadata["sound_design"] = sound_plan
-
-            # Phase 6: Scene Generation with QA
             scene_durations = self._scene_durations(plan["scenes"], audio_duration)
             scene_paths = self._generate_scenes(plan, scene_durations, reference_url)
 
-            # Phase 7: Audio Mixing (narration + SFX)
-            self._update_status("AUDIO_MIXING", 72, "🔊 Mixing narration with sound design...")
-            mixed_audio_path = self.sound_designer.mix_final_audio(
-                narration_path, scene_durations,
-                str(self.audio_dir / "mia_mixed.wav")
-            )
-            mixed_duration = self._probe_duration(mixed_audio_path)
-            self.metadata["mixed_audio"] = {"path": mixed_audio_path, "duration": mixed_duration}
-
-            # Phase 8: Captions
             self._update_status("CAPTION_GENERATING", 78, "💬 Creating professional captions...")
             ass_path = self.captions.generate_from_script(
-                plan["script"], mixed_duration, str(self.caption_dir / "mia_captions.ass")
+                plan["script"], audio_duration, str(self.caption_dir / "mia_captions.ass")
             )
 
-            # Phase 9: Video Assembly
             self._update_status("VIDEO_ASSEMBLY", 84, "✂️ Assembling full-screen 9:16 video...")
             job_final_path = self.assembler.assemble(
                 scene_paths,
-                mixed_audio_path,
+                audio_path,
                 ass_path,
                 str(self.job_dir / "final_video.mp4"),
                 scene_durations=scene_durations,
@@ -129,19 +103,12 @@ class VideoPipeline:
             shutil.copy2(job_final_path, final_path)
             final_duration = self.assembler.probe_duration(final_path)
 
-            # Phase 10: Final QA
-            self._update_status("FINAL_QA", 90, "🔍 Running final video quality check...")
-            qa_result = self._final_video_qa(final_path, mixed_duration, plan)
-            self.metadata["final_qa"] = qa_result
-
-            # Phase 11: SEO
             self._update_status("SEO_GENERATING", 94, "📝 Creating YouTube metadata...")
             youtube = self.seo.generate(plan)
             job_seo_path = self.seo.write_text_file(youtube, str(self.job_dir / "mia_youtube.txt"))
             seo_path = str(self.host_dir / "mia_youtube.txt")
             shutil.copy2(job_seo_path, seo_path)
 
-            # Publish and cleanup
             self._publish_supporting_files(plan, ass_path)
             video_url = self._public_url("mia_video.mp4")
             seo_url = self._public_url("mia_youtube.txt")
@@ -185,81 +152,36 @@ class VideoPipeline:
         reference_path = self.agnes.download_file(image_url, str(self.work_dir / "mia_reference.png"))
         self.character.set_reference_image(reference_path)
 
-    def _register_story_objects(self, plan: Dict) -> None:
-        """Register persistent objects from the story plan."""
-        for obj in plan.get("key_objects", []):
-            if isinstance(obj, dict) and obj.get("name"):
-                try:
-                    self.object_manager.register_object(
-                        obj_id=obj["name"],
-                        obj_type=obj.get("type", "prop"),
-                        description=obj.get("description", ""),
-                        introduced_scene=obj.get("introduced_scene", 1),
-                        owner=obj.get("owner", "Mia"),
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to register object %s: %s", obj.get("name"), exc)
-
     def _generate_scenes(self, plan: Dict, durations: List[float], reference_url: str) -> List[str]:
         scenes = plan["scenes"]
         outputs: List[str] = []
         generated_metadata = []
-
         for index, (scene, duration) in enumerate(zip(scenes, durations), 1):
-            base = 26 + int((index - 1) / max(len(scenes), 1) * 42)
-
-            # Build scene state
-            scene_state = {
-                "location": scene.get("location", "the current location"),
-                "outfit": plan.get("outfit", ""),
-                "objects_visible": scene.get("objects_visible", []),
-                "objects_held": scene.get("objects_held", []),
-                "emotional_state": scene.get("emotional_state", "curious"),
-                "shot_type": scene.get("shot_type", "handheld medium vlog shot"),
-                "camera_motion": scene.get("camera_motion", "subtle handheld push-in"),
-                "lighting": scene.get("lighting", "natural warm realistic light"),
-                "expression": scene.get("expression", "natural and emotionally appropriate"),
-                "story_event": scene.get("story_event", ""),
-            }
-
-            # Build object prompt segment
-            object_prompt = self.object_manager.build_object_prompt_segment(index, scene)
-
+            base = 26 + int((index - 1) / max(len(scenes), 1) * 48)
             self._update_status(
                 "SCENE_KEYFRAME_GENERATING", base,
                 f"🎬 Generating Mia scene {index}/{len(scenes)} identity keyframe...",
             )
-
-            # Generate keyframe with text-only identity (Agnes image API doesn't support img2img)
-            keyframe_prompt = self.character.scene_keyframe_prompt(scene, scene_state)
-            if object_prompt:
-                keyframe_prompt = keyframe_prompt.replace(
-                    "Vertical 9:16 composition",
-                    f"{object_prompt}Vertical 9:16 composition"
-                )
-
+            keyframe_prompt = self.character.scene_keyframe_prompt(scene, plan.get("outfit"))
             keyframe_url = self.agnes.generate_image(
-                keyframe_prompt, size="1K", ratio="9:16"
+                keyframe_prompt, size="1K", ratio="9:16", image_urls=[reference_url]
             )
             keyframe_path = self.agnes.download_file(
                 keyframe_url, str(self.scene_dir / f"scene_{index:02d}_keyframe.png")
             )
-
-            # Visual QA on keyframe
-            expected_objects = scene.get("objects_visible", []) + scene.get("objects_held", [])
-            qa_pass, qa_reason = self.visual_qa.validate_image(keyframe_path, index, expected_objects)
-            if not qa_pass:
-                logger.warning("Scene %d keyframe QA: %s", index, qa_reason)
+            # The Agnes video API must fetch a publicly reachable URL, not a /root local path.
+            public_keyframe = self.host_dir / f"scene_{index:02d}_keyframe.png"
+            shutil.copy2(keyframe_path, public_keyframe)
+            public_keyframe.chmod(0o644)
+            public_keyframe_url = self._public_url(public_keyframe.name)
 
             self._update_status(
-                "SCENE_VIDEO_GENERATING", min(68, base + 4),
+                "SCENE_VIDEO_GENERATING", min(73, base + 4),
                 f"🎥 Animating Mia scene {index}/{len(scenes)}...",
             )
-
-            # Generate video using the keyframe
             result = self.agnes.generate_video(
-                prompt=self.character.video_motion_prompt(scene, scene_state),
-                image_url=keyframe_url,
+                prompt=self.character.video_motion_prompt(scene),
+                image_url=public_keyframe_url,
                 mode=self.character.config.get("video_mode", "ti2vid"),
                 width=720,
                 height=1280,
@@ -270,12 +192,11 @@ class VideoPipeline:
             video_id = result.get("video_id") or result.get("task_id") or result.get("id")
             if not video_id:
                 raise RuntimeError(f"Scene {index}: Agnes returned no video_id")
-
             completed = self.agnes.wait_for_video(
                 video_id,
                 timeout=1800,
                 progress_callback=lambda waited, i=index, total=len(scenes), p=base: self._update_status(
-                    "SCENE_VIDEO_GENERATING", min(68, p + 4),
+                    "SCENE_VIDEO_GENERATING", min(73, p + 4),
                     f"⏳ Waiting for Mia scene {i}/{total} ({waited}s)...",
                 ),
             )
@@ -284,28 +205,16 @@ class VideoPipeline:
                 video_url, str(self.scene_dir / f"scene_{index:02d}.mp4")
             )
             outputs.append(video_path)
-
-            # Update object states
-            for obj_id in scene.get("objects_visible", []) + scene.get("objects_held", []):
-                self.object_manager.update_object_state(
-                    obj_id, index, status="active",
-                    owner="Mia" if obj_id in scene.get("objects_held", []) else None
-                )
-
+            public_keyframe.unlink(missing_ok=True)
             generated_metadata.append({
                 **scene,
                 "duration": duration,
                 "keyframe_path": keyframe_path,
-                "keyframe_url": keyframe_url,
                 "video_id": video_id,
                 "video_url": video_url,
                 "video_path": video_path,
-                "qa_pass": qa_pass,
-                "qa_reason": qa_reason,
             })
-
         self.metadata["scenes"] = generated_metadata
-        self.metadata["visual_qa_failures"] = self.visual_qa.get_failure_report()
         return outputs
 
     @staticmethod
@@ -313,79 +222,13 @@ class VideoPipeline:
         weights = [max(1, len(str(scene.get("narration", "")).split())) for scene in scenes]
         total = sum(weights) or len(scenes)
         raw = [audio_duration * weight / total for weight in weights]
+        # Agnes provides discrete approximate clip lengths. Allocation still remains exact for assembly.
         return raw
-
-    def _final_video_qa(self, video_path: str, expected_duration: float, plan: Dict) -> Dict:
-        """Run final quality checks on the assembled video."""
-        result = {"pass": True, "checks": []}
-
-        try:
-            # Check 1: Duration
-            actual_duration = self.assembler.probe_duration(video_path)
-            duration_diff = abs(actual_duration - expected_duration)
-            if duration_diff > 0.5:
-                result["checks"].append({
-                    "check": "duration",
-                    "pass": False,
-                    "expected": expected_duration,
-                    "actual": actual_duration,
-                    "diff": duration_diff,
-                })
-                result["pass"] = False
-            else:
-                result["checks"].append({"check": "duration", "pass": True})
-
-            # Check 2: File size
-            file_size = Path(video_path).stat().st_size
-            if file_size < 1024:
-                result["checks"].append({"check": "file_size", "pass": False, "size": file_size})
-                result["pass"] = False
-            else:
-                result["checks"].append({"check": "file_size", "pass": True, "size": file_size})
-
-            # Check 3: Scene count
-            expected_scenes = len(plan.get("scenes", []))
-            result["checks"].append({"check": "scene_count", "pass": True, "count": expected_scenes})
-
-            # Check 4: Identity consistency (via scene metadata)
-            identity_issues = []
-            for scene_meta in self.metadata.get("scenes", []):
-                if not scene_meta.get("qa_pass", True):
-                    identity_issues.append({
-                        "scene": scene_meta.get("index"),
-                        "reason": scene_meta.get("qa_reason"),
-                    })
-            if identity_issues:
-                result["checks"].append({"check": "identity_consistency", "pass": False, "issues": identity_issues})
-                result["pass"] = False
-            else:
-                result["checks"].append({"check": "identity_consistency", "pass": True})
-
-        except Exception as exc:
-            logger.error("Final QA failed: %s", exc)
-            result["checks"].append({"check": "qa_execution", "pass": False, "error": str(exc)})
-            result["pass"] = False
-
-        logger.info("Final QA result: %s", "PASS" if result["pass"] else "FAIL")
-        return result
-
-    @staticmethod
-    def _probe_duration(path: str) -> float:
-        import subprocess
-        result = subprocess.run([
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", path,
-        ], check=True, capture_output=True, text=True)
-        return float(result.stdout.strip())
 
     def _publish_supporting_files(self, plan: Dict, ass_path: str) -> None:
         shutil.copy2(self.job_dir / "script.txt", self.host_dir / "mia_script.txt")
         shutil.copy2(self.job_dir / "story_plan.json", self.host_dir / "story_plan.json")
         shutil.copy2(ass_path, self.host_dir / "mia_captions.ass")
-        # Also publish sound design plan
-        sound_plan_path = self.audio_dir / "sound_design.json"
-        if sound_plan_path.exists():
-            shutil.copy2(sound_plan_path, self.host_dir / "sound_design.json")
 
     def _public_url(self, filename: str) -> str:
         return f"{self.public_base}/{quote(self.job_id)}/{quote(filename)}"
