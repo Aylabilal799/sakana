@@ -1,52 +1,57 @@
+import logging
+import traceback
 import discord
-from discord import ApplicationContext
 from discord.ext import commands
 
-def setup_commands(bot: commands.Bot, queue):
-    @bot.slash_command(name="generate", description="Generate a video from a script")
-    async def generate(ctx: ApplicationContext, script: str, genre: str = "story"):
-        await ctx.defer()
-        job_id = await queue.add_job(ctx.author.id, ctx.channel_id, script, genre)
-        embed = discord.Embed(title="🎬 Video Generation Started",
-                              description="Your job has been queued.", color=discord.Color.blue())
-        embed.add_field(name="Job ID", value=f"`{job_id}`", inline=True)
-        embed.add_field(name="Position", value=await queue.get_position(job_id), inline=True)
-        embed.add_field(name="Script Preview", value=f"{script[:100]}...", inline=False)
-        await ctx.followup.send(embed=embed)
+logger = logging.getLogger(__name__)
 
-    @bot.slash_command(name="status", description="Check job status")
-    async def status(ctx: ApplicationContext, job_id: str):
-        info = await queue.get_status(job_id)
-        if not info:
-            await ctx.respond(f"Job `{job_id}` not found.", ephemeral=True)
-            return
-        emoji = {"COMPLETED": "✅", "FAILED": "❌", "PENDING": "⏳"}.get(info["status"], "⏳")
-        embed = discord.Embed(title=f"{emoji} {info['status']}",
-                            color=discord.Color.green() if info["status"] == "COMPLETED" else discord.Color.blue())
-        embed.add_field(name="Progress", value=f"{info.get('progress', 0)}%", inline=True)
-        if info.get("current_step"):
-            embed.add_field(name="Step", value=info["current_step"], inline=False)
-        if info.get("error"):
-            embed.add_field(name="Error", value=f"```{info['error'][:500]}```", inline=False)
-        await ctx.respond(embed=embed, ephemeral=True)
+def setup(bot):
+    @bot.slash_command(name="mia", description="Generate a Mia AI video")
+    async def mia_cmd(
+        ctx: discord.ApplicationContext,
+        prompt: discord.Option(str, "Describe Mia's vlog scene", required=True),
+    ):
+        await ctx.defer(ephemeral=False)
+        try:
+            job_id = await bot.job_queue.add_job(
+                user_id=ctx.author.id,
+                username=str(ctx.author),
+                channel_id=ctx.channel_id,
+                prompt=prompt,
+                genre="auto",
+            )
+            embed = discord.Embed(
+                title="Mia AI Video Queued",
+                description="Job ID: `" + job_id + "`",
+                color=discord.Color.blurple(),
+            )
+            display = prompt[:500] + "..." if len(prompt) > 500 else prompt
+            embed.add_field(name="Prompt", value=display, inline=False)
+            embed.add_field(name="Status", value="PENDING", inline=True)
+            await ctx.followup.send(embed=embed)
+            await bot.job_queue.process_next()
+        except Exception as e:
+            logger.exception("mia error")
+            await ctx.followup.send("Error: " + str(e), ephemeral=True)
 
-    @bot.slash_command(name="queue", description="Show pending jobs")
-    async def queue_cmd(ctx: ApplicationContext):
-        jobs = await queue.list_pending()
-        if not jobs:
-            await ctx.respond("No pending jobs.", ephemeral=True)
-            return
-        embed = discord.Embed(title="📋 Queue", color=discord.Color.blue())
-        for i, job in enumerate(jobs[:10], 1):
-            embed.add_field(name=f"{i}. {job['job_id'][:8]}",
-                          value=f"{job.get('progress', 0)}% — {job.get('current_step', 'waiting')}", inline=False)
-        await ctx.respond(embed=embed, ephemeral=True)
+    @bot.slash_command(name="miastatus", description="Check Mia job status")
+    async def mia_status_cmd(
+        ctx: discord.ApplicationContext,
+        job_id: discord.Option(str, "Job ID to check", required=True),
+    ):
+        try:
+            status = await bot.job_queue.get_status(job_id)
+            if not status:
+                return await ctx.respond("Job `" + job_id + "` not found.", ephemeral=True)
+            embed = discord.Embed(title="Job: `" + job_id + "`", color=discord.Color.blue())
+            embed.add_field(name="Status", value=status.get("status", "UNKNOWN"), inline=True)
+            embed.add_field(name="Stage", value=status.get("stage", "-"), inline=True)
+            embed.add_field(name="Progress", value=str(status.get("progress", 0)) + "%", inline=True)
+            if status.get("error_message"):
+                embed.add_field(name="Error", value="```" + status["error_message"][:500] + "```", inline=False)
+            await ctx.respond(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.exception("status error")
+            await ctx.respond("Error: " + str(e), ephemeral=True)
 
-    @bot.slash_command(name="voices", description="List TTS voices")
-    async def voices_cmd(ctx: ApplicationContext):
-        from generator.tts_engine import TTSEngine
-        voices = TTSEngine().get_female_voices()
-        embed = discord.Embed(title="🎙️ Female Voices", color=discord.Color.blue())
-        for v in voices:
-            embed.add_field(name=f"{v['name']} (`{v['id']}`)", value=f"Quality: {v['grade']}", inline=True)
-        await ctx.respond(embed=embed, ephemeral=True)
+    logger.info("Registered commands: /mia, /miastatus")

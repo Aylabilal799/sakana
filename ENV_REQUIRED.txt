@@ -1,0 +1,21 @@
+Required existing config/.env values (do not commit the secret values):
+
+DISCORD_BOT_TOKEN=...
+AGNES_API_KEY=...
+AGNES_BASE_URL=https://apihub.agnes-ai.com/v1
+AGNES_VIDEO_DELAY=60
+AGNES_IMAGE_DELAY=3
+KOKORO_MODEL_PATH=/root/sakana/models/kokoro/kokoro-v1.0.onnx
+KOKORO_VOICES_PATH=/root/sakana/models/kokoro/voices-v1.0.bin
+KOKORO_VOICE=af_bella
+OUTPUT_DIRECTORY=/var/www/agnes-videos
+VIDEO_HOST_URL=http://152.53.124.111:6464/videos
+PUBLIC_HOSTNAME=152.53.124.111
+
+Optional:
+PROJECT_DIRECTORY=/root/sakana
+MIA_CHARACTER_DIRECTORY=/root/sakana/characters/mia
+AGNES_CHAT_MODEL=agnes-2.0-flash
+AGNES_IMAGE_MODEL=agnes-image-2.1-flash
+AGNES_VIDEO_MODEL=agnes-video-v2.0
+JOB_DATABASE=/root/sakana/jobs/queue.db

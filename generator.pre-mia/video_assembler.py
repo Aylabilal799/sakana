@@ -31,6 +31,8 @@ class VideoAssembler:
         audio_duration = self.probe_duration(audio_path)
         narration_durations = self._normalize_durations(scene_durations, len(scene_paths), audio_duration)
 
+        # Each non-final clip gets transition_duration extra material. Crossfade overlap then
+        # reduces the final visual duration back to exactly the narration duration.
         render_durations = [
             duration + (transition_duration if index < len(scene_paths) - 1 else 0.0)
             for index, duration in enumerate(narration_durations)

@@ -84,48 +84,33 @@ class AgnesClient:
         """Generate or edit an image and return a public URL or data URI."""
         self._require_key()
         self._rl_image()
+        extra_body: Dict[str, Any] = {"response_format": "url"}
+        if image_urls:
+            extra_body["image"] = image_urls
         payload: Dict[str, Any] = {
             "model": os.getenv("AGNES_IMAGE_MODEL", "agnes-image-2.1-flash"),
             "prompt": prompt,
             "size": size,
             "ratio": ratio,
+            "extra_body": extra_body,
         }
-        if image_urls:
-            payload["image"] = image_urls
-
-        logger.info(
-            "Image request: model=%s prompt_len=%d reference=%s",
-            payload["model"], len(prompt), bool(image_urls),
-        )
         response = self.session.post(
             f"{self.base_url}/images/generations",
             headers=self.headers,
             json=payload,
             timeout=360,
         )
-        if response.status_code in (429, 500, 502, 503, 520):
-            body = response.text[:500]
-            logger.warning("Agnes image service busy (%s): %s", response.status_code, body)
-            raise AgnesAPIError(f"Image service busy ({response.status_code}): {body}")
+        if response.status_code >= 500 or response.status_code == 429:
+            raise AgnesAPIError(f"Image service busy ({response.status_code})")
         if response.status_code != 200:
             logger.error("Image error %s: %s", response.status_code, response.text[:800])
         response.raise_for_status()
-        data = response.json()
-        logger.debug("Image response keys: %s", list(data.keys()))
-
-        if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-            item = data["data"][0]
-            if item.get("url"):
-                return item["url"]
-            if item.get("b64_json"):
-                return f"data:image/png;base64,{item['b64_json']}"
-        if "url" in data:
-            return data["url"]
-        if "b64_json" in data:
-            return f"data:image/png;base64,{data['b64_json']}"
-
-        logger.error("Unexpected image response structure: %s", json.dumps(data)[:500])
-        raise RuntimeError("Agnes image response did not contain a recognizable URL or image data")
+        item = response.json()["data"][0]
+        if item.get("url"):
+            return item["url"]
+        if item.get("b64_json"):
+            return f"data:image/png;base64,{item['b64_json']}"
+        raise RuntimeError("Agnes image response contained neither url nor b64_json")
 
     @retry(
         stop=stop_after_attempt(10),
@@ -165,10 +150,9 @@ class AgnesClient:
         if image_url and not images:
             images = [image_url]
         if mode == "keyframes" and images:
-            payload["mode"] = "keyframes"
-            payload["image"] = images[:2]
+            payload["extra_body"] = {"mode": "keyframes", "image": images[:2]}
         elif images:
-            payload["image"] = images
+            payload["extra_body"] = {"image": images}
 
         logger.info(
             "Video request: model=%s prompt_len=%d mode=%s reference=%s frames=%d",
@@ -183,7 +167,7 @@ class AgnesClient:
         if response.status_code in (429, 500, 502, 503, 520):
             body = response.text[:500]
             logger.warning("Agnes video service busy (%s): %s", response.status_code, body)
-            raise AgnesAPIError(f"Video service busy ({response.status_code}): {body}")
+            raise AgnesAPIError(f"Video service busy ({response.status_code})")
         if response.status_code != 200:
             logger.error("Video error %s: %s", response.status_code, response.text[:800])
         response.raise_for_status()

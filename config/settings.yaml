@@ -1,52 +1,53 @@
 app:
-  name: "Agnes Video Pipeline"
-  version: "1.0.0"
+  name: "Mia AI Influencer Pipeline"
+  version: "2.0.0"
   environment: "production"
 
 video:
   width: 1080
   height: 1920
+  aspect_ratio: "9:16"
   fps: 24
   codec: "libx264"
   audio_codec: "aac"
   preset: "medium"
-  crf: 23
+  crf: 21
   output_format: "mp4"
   scene_duration: 10
-  max_scenes: 5
+  max_scenes: 7
+  transition_seconds: 0.35
+  crop_mode: "cover"
+  subtle_camera_drift: true
 
 agnes:
   base_url: "https://apihub.agnes-ai.com/v1"
   chat_model: "agnes-2.0-flash"
   image_model: "agnes-image-2.1-flash"
   video_model: "agnes-video-v2.0"
+  image_ratio: "9:16"
+  image_size: "1K"
   rate_limit_delay: 60
   image_rate_limit_delay: 3
   max_retries: 3
+  identity_strategy: "persistent-reference-plus-scene-img2img"
 
 tts:
   engine: "kokoro"
-  model_path: "/root/sakana/models/kokoro/kokoro-v1.0.onnx"
-  voices_path: "/root/sakana/models/kokoro/voices-v1.0.bin"
   default_voice: "af_bella"
   speed: 1.0
-  available_voices:
-    - af_bella
-    - af_heart
-    - af_nicole
-    - af_sarah
-    - bf_emma
 
 captions:
   enabled: true
-  font: "Arial-Bold"
-  fontsize: 42
-  color: "white"
-  stroke_color: "black"
-  stroke_width: 2
-  position: "center"
+  font: "DejaVu Sans"
+  fontsize: 68
+  primary_color: "white"
+  accent_color: "gold"
+  outline_color: "near-black"
+  outline_width: 5
+  bottom_safe_margin: 255
   max_lines: 2
-  line_length: 20
+  line_length: 28
+  fade_ms: 90
 
 seo:
   channel_name: ""
@@ -59,10 +60,12 @@ seo:
 
 hosting:
   type: "nginx"
-  base_url: ""
-  public_directory: "/root/sakana/output"
+  listen: "0.0.0.0:6464"
+  base_url: "http://152.53.124.111:6464/videos"
+  public_directory: "/var/www/agnes-videos"
 
 limits:
   max_jobs_queued: 10
-  max_script_length: 5000
+  max_prompt_length: 5000
+  queue_concurrency: 1
   cleanup_temp_after_hours: 24

@@ -1,0 +1,15 @@
+{
+  "name": "Mia",
+  "role": "AI female influencer and daily vlogger",
+  "age_appearance": "24-year-old adult woman",
+  "identity": "oval face with softly defined cheekbones, warm hazel almond-shaped eyes, straight petite nose, naturally full lips, light warm olive skin with subtle freckles, long dark-chestnut wavy hair parted slightly left",
+  "body": "slim natural build with realistic adult proportions",
+  "default_outfit": "cream fitted ribbed top, high-waisted blue jeans, small gold hoop earrings, delicate gold pendant necklace",
+  "prompt_prefix": "Mia, the exact same 24-year-old adult woman from the identity reference image, oval face, softly defined cheekbones, warm hazel almond-shaped eyes, straight petite nose, naturally full lips, light warm olive skin with subtle freckles, long dark-chestnut wavy hair parted slightly left, slim natural build",
+  "style": "photorealistic modern social-media creator aesthetic, authentic phone-camera detail, natural skin texture, realistic anatomy, cinematic but believable",
+  "negative_prompt": "different woman, changed identity, changed face, changed ethnicity, changed age, altered eye color, altered hair color, face morphing, duplicate person, twins, multiple Mia characters, plastic skin, deformed hands, extra fingers, distorted face, text, watermark, logo, black bars, letterbox",
+  "voice": "af_bella",
+  "reference_image": "/root/sakana/characters/mia/reference_image.png",
+  "video_mode": "ti2vid",
+  "scene_image_strategy": "reference_img2img"
+}

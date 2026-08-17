@@ -44,11 +44,9 @@ class CaptionEngine:
     def generate_from_script(self, script: str, total_duration: float, output_path: str) -> str:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         phrases = self._phrases(script)
-
-        # EVEN DISTRIBUTION: each phrase gets equal time.
-        # Word-count weighting drifts because TTS doesn't speak at constant WPS.
-        phrase_count = len(phrases) or 1
-        slot = total_duration / phrase_count
+        weights = [max(1.0, len(re.findall(r"\w+", phrase))) for phrase in phrases]
+        total_weight = sum(weights) or 1.0
+        cursor = 0.0
 
         header = """[Script Info]
 Title: Mia Professional Shorts Captions
@@ -68,22 +66,18 @@ Style: MiaCaptionEmphasis,DejaVu Sans,72,&H0000D7FF,&H00FFFFFF,&H00101010,&H7800
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
         events: List[str] = []
-        for index, phrase in enumerate(phrases):
-            start = index * slot
-            # Last phrase stretches to the exact end to avoid gaps
-            end = total_duration if index == phrase_count - 1 else (index + 1) * slot
-
+        for index, (phrase, weight) in enumerate(zip(phrases, weights)):
+            duration = total_duration * weight / total_weight
+            start = cursor
+            end = total_duration if index == len(phrases) - 1 else min(total_duration, cursor + duration)
+            cursor = end
             wrapped = self._wrap(phrase)
             is_climax = self._is_climax_phrase(phrase)
             styled = self._emphasize(self._escape(wrapped), force_emphasis=is_climax)
             style_name = "MiaCaptionEmphasis" if is_climax else "MiaCaption"
             fade = r"{\fad(120,120)\blur0.4}" if is_climax else r"{\fad(90,90)\blur0.35}"
-
-            # BUG FIX: ASS Dialogue has 10 fields = 9 commas.
-            # Old code had 10 commas, causing the Text field to start with ",".
-            # Fixed: ,,0,0,0,,  (9 commas total)
             events.append(
-                f"Dialogue: 0,{self._fmt(start)},{self._fmt(end)},{style_name},,0,0,0,,"
+                f"Dialogue: 0,{self._fmt(start)},{self._fmt(end)},{style_name},,0,0,0,,,"
                 + fade + styled
             )
 
@@ -127,11 +121,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     @staticmethod
     def _clean_phrase(text: str) -> str:
-        """Remove malformed leading/trailing punctuation from subtitle phrases."""
+        """Remove malformed leading/trailing punctuation from subtitle phrases.
+
+        Fixes:
+            ", I moved..."      -> "I moved..."
+            " ,I moved..."      -> "I moved..."
+            ",Too quiet..."     -> "Too quiet..."
+            "  , Something..."  -> "Something..."
+            "word , word"       -> "word, word"
+        """
         text = text.strip()
         if not text:
             return ""
-        # Strip leading punctuation
+        # Strip leading punctuation: commas, semicolons, colons, dashes, quotes, ellipsis
         text = re.sub(
             r"^[\s,;:\-–—\"\'\u2018\u2019\u201C\u201D\u2026]+",
             "",
@@ -153,6 +155,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     def _wrap(text: str) -> str:
         lines = textwrap.wrap(text, width=26, break_long_words=False, break_on_hyphens=False)
         if len(lines) > 2:
+            # Force 2-line split at midpoint
             words = text.split()
             midpoint = max(1, len(words) // 2)
             lines = [" ".join(words[:midpoint]), " ".join(words[midpoint:])]
@@ -175,6 +178,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     def _emphasize(self, text: str, force_emphasis: bool = False) -> str:
         """Selective emphasis: one word per phrase, or full phrase for climaxes."""
         if force_emphasis:
+            # Full phrase emphasis for climactic lines
             return r"{\c&H00D7FF&\b1}" + text + r"{\c&HFFFFFF&\b0}"
 
         words = re.split(r"(\s+|\\N)", text)

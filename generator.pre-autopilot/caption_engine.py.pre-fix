@@ -10,17 +10,12 @@ logger = logging.getLogger(__name__)
 class CaptionEngine:
     # High-impact words that deserve emphasis (story beats, emotions, reveals)
     EMPHASIS_WORDS = {
-        # Story beats
         "wait", "look", "never", "found", "discovered", "suddenly", "realized",
         "remember", "forgot", "secret", "truth", "lie", "proof", "evidence",
-        # Emotions
         "scared", "terrified", "shocked", "confused", "worried", "nervous",
         "creepy", "unsettling", "impossible", "unbelievable", "insane",
-        # Identity/revelation
         "myself", "me", "my", "mine", "that", "same", "identical", "exactly",
-        # Time
         "today", "finally", "again", "before", "always", "never",
-        # Direct address
         "mia", "watch", "listen", "guys", "you",
     }
 
@@ -44,11 +39,9 @@ class CaptionEngine:
     def generate_from_script(self, script: str, total_duration: float, output_path: str) -> str:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         phrases = self._phrases(script)
-
-        # EVEN DISTRIBUTION: each phrase gets equal time.
-        # Word-count weighting drifts because TTS doesn't speak at constant WPS.
-        phrase_count = len(phrases) or 1
-        slot = total_duration / phrase_count
+        weights = [max(1.0, len(re.findall(r"\w+", phrase))) for phrase in phrases]
+        total_weight = sum(weights) or 1.0
+        cursor = 0.0
 
         header = """[Script Info]
 Title: Mia Professional Shorts Captions
@@ -68,22 +61,18 @@ Style: MiaCaptionEmphasis,DejaVu Sans,72,&H0000D7FF,&H00FFFFFF,&H00101010,&H7800
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
         events: List[str] = []
-        for index, phrase in enumerate(phrases):
-            start = index * slot
-            # Last phrase stretches to the exact end to avoid gaps
-            end = total_duration if index == phrase_count - 1 else (index + 1) * slot
-
+        for index, (phrase, weight) in enumerate(zip(phrases, weights)):
+            duration = total_duration * weight / total_weight
+            start = cursor
+            end = total_duration if index == len(phrases) - 1 else min(total_duration, cursor + duration)
+            cursor = end
             wrapped = self._wrap(phrase)
             is_climax = self._is_climax_phrase(phrase)
             styled = self._emphasize(self._escape(wrapped), force_emphasis=is_climax)
             style_name = "MiaCaptionEmphasis" if is_climax else "MiaCaption"
             fade = r"{\fad(120,120)\blur0.4}" if is_climax else r"{\fad(90,90)\blur0.35}"
-
-            # BUG FIX: ASS Dialogue has 10 fields = 9 commas.
-            # Old code had 10 commas, causing the Text field to start with ",".
-            # Fixed: ,,0,0,0,,  (9 commas total)
             events.append(
-                f"Dialogue: 0,{self._fmt(start)},{self._fmt(end)},{style_name},,0,0,0,,"
+                f"Dialogue: 0,{self._fmt(start)},{self._fmt(end)},{style_name},,0,0,0,,,"
                 + fade + styled
             )
 
@@ -94,58 +83,47 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return ass_path
 
     def _phrases(self, script: str) -> List[str]:
-        """Split script into 3-4 word phrases, cleaning stray punctuation."""
-        # Normalize spacing around punctuation so commas don't become orphaned tokens
-        script = re.sub(r"\s+([,;:!?.])", r"\1", script)
-        script = re.sub(r"\s+", " ", script).strip()
+        """Split script into clean subtitle phrases, fixing stray punctuation."""
+        # Step 1: Split on sentence boundaries, preserving the punctuation with the sentence
+        raw_sentences = re.split(r"(?<=[.!?])\s+", script.strip())
+        sentences = [self._clean_phrase(s) for s in raw_sentences if s.strip()]
 
-        tokens = re.findall(r"\S+", script)
         phrases: List[str] = []
         current: List[str] = []
 
-        for token in tokens:
-            # Skip tokens that are ONLY punctuation (these are segmentation artifacts)
-            if re.match(r"^[,;:!?.\"\'\u2018\u2019\u201C\u201D\-–—…]+$", token):
-                continue
-            current.append(token)
-            terminal = bool(re.search(r"[.!?]$", token))
-            # Break every 3-4 words, or at sentence boundary with at least 2 words
-            if len(current) >= 4 or (len(current) >= 2 and terminal):
+        for sentence in sentences:
+            words = sentence.split()
+            current.extend(words)
+            # Break at sentence end or when phrase gets long enough
+            if len(current) >= 8:
+                phrases.append(self._clean_phrase(" ".join(current)))
+                current = []
+            elif len(current) >= 4 and re.search(r"[.!?,;:]$", sentence):
                 phrases.append(self._clean_phrase(" ".join(current)))
                 current = []
 
         if current:
-            if phrases and len(current) < 2:
-                # Append very short remainder to previous phrase
+            if phrases and len(current) < 3:
+                # Append to previous phrase instead of tiny orphan
                 phrases[-1] = self._clean_phrase(phrases[-1] + " " + " ".join(current))
             else:
                 phrases.append(self._clean_phrase(" ".join(current)))
 
-        # Final safety pass — strip any remaining leading punctuation from all phrases
-        phrases = [self._clean_phrase(p) for p in phrases if self._clean_phrase(p)]
         return phrases or [""]
 
     @staticmethod
     def _clean_phrase(text: str) -> str:
-        """Remove malformed leading/trailing punctuation from subtitle phrases."""
+        """Remove stray leading/trailing punctuation and whitespace from a phrase."""
         text = text.strip()
-        if not text:
-            return ""
-        # Strip leading punctuation
-        text = re.sub(
-            r"^[\s,;:\-–—\"\'\u2018\u2019\u201C\u201D\u2026]+",
-            "",
-            text,
-        )
-        # Strip trailing stray punctuation
-        text = re.sub(
-            r"[\s,;:\-–—\"\'\u2018\u2019\u201C\u201D\u2026]+$",
-            "",
-            text,
-        )
-        # Fix detached punctuation: "word , word" -> "word, word"
+        # Remove leading punctuation that shouldn't start a caption
+        # e.g., ", I moved..." -> "I moved..."
+        # e.g., " ,I..." -> "I..."
+        # But preserve internal punctuation like "Wait, look..."
+        text = re.sub(r"^[\s,;:\-–—]+", "", text)
+        text = re.sub(r"[\s,;:\-–—]+$", "", text)
+        # Fix cases where punctuation got detached: "Too fine , maybe" -> "Too fine, maybe"
         text = re.sub(r"\s+([,;:!?.])", r"\1", text)
-        # Collapse multiple spaces
+        # Fix multiple spaces
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 

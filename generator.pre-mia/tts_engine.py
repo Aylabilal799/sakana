@@ -68,4 +68,5 @@ class TTSEngine:
         return [voice["id"] for voice in self.VOICES]
 
     def get_female_voices(self):
+        # Does not load the large model just to list available voices.
         return list(self.VOICES)
