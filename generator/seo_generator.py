@@ -11,28 +11,28 @@ class SEOGenerator:
         "horror": [
             "horror short", "scary story", "creepy abandoned places",
             "abandoned horror", "horror vlog", "creepy short",
-            "ai horror story", "unsettling story", "dark mystery",
+            "unsettling story", "dark mystery",
         ],
         "mystery": [
             "mystery vlog", "unsolved mystery", "creepy mystery",
             "abandoned mystery", "mysterious discovery", "investigation vlog",
-            "ai mystery story", "suspense short", "intrigue story",
+            "suspense short", "intrigue story",
         ],
         "travel": [
             "travel vlog", "exploration vlog", "adventure vlog",
-            "ai travel story", "discovering places", "travel shorts",
+            "discovering places", "travel shorts",
         ],
         "reaction": [
-            "reaction vlog", "ai reaction", "story reaction",
+            "reaction vlog", "story reaction",
             "mystery reaction", "creepy reaction", "reaction shorts",
         ],
         "daily_vlog": [
-            "daily vlog", "ai daily life", "ai influencer",
-            "mia ai", "mia vlog", "ai creator",
+            "daily vlog", "story vlog", "short story",
+            "daily story", "vlog series",
         ],
         "story": [
-            "ai story", "story short", "narrative short",
-            "ai generated story", "storytelling", "ai narrative",
+            "story short", "narrative short",
+            "storytelling", "short story",
         ],
     }
 
@@ -63,7 +63,7 @@ class SEOGenerator:
         short = " ".join(first_sentences[:2])[:280]
         description = (
             f"{short}\n\n"
-            "Follow Mia's AI daily-vlog series for new adventures, mysteries and reactions.\n\n"
+            "Follow Mia's daily-vlog series for new adventures, mysteries and reactions.\n\n"
             + " ".join(hashtags)
         )
         return {
@@ -94,8 +94,9 @@ class SEOGenerator:
     @staticmethod
     def _title(plan: Dict) -> str:
         title = str(plan.get("title") or "Mia's Daily Vlog").strip()
-        if not title.lower().startswith("mia"):
-            title = f"Mia: {title}"
+        # Clean any leaked Mia: prefix from the LLM
+        if title.lower().startswith("mia:"):
+            title = title[4:].strip()
         return title[:100]
 
     def _semantic_tags(self, script: str, genre: str, title: str, plan: Dict) -> List[str]:
@@ -103,8 +104,8 @@ class SEOGenerator:
         title_lower = title.lower()
         tags = []
 
-        # Core Mia tags (always present)
-        core = ["mia ai influencer", "mia ai vlog", "ai daily vlog", "ai generated story", "youtube shorts"]
+        # Core story tags (always present) — NO AI wording
+        core = ["mia vlog", "mia daily vlog", "daily vlog", "short story", "youtube shorts"]
         tags.extend(core)
 
         # Genre-specific tags
@@ -166,10 +167,10 @@ class SEOGenerator:
             "mystery": ["#Mystery", "#Suspense", "#Unsolved"],
             "travel": ["#TravelVlog", "#Exploration", "#Adventure"],
             "reaction": ["#Reaction", "#StoryReaction"],
-            "daily_vlog": ["#DailyVlog", "#AIInfluencer"],
-            "story": ["#AIStory", "#StoryShort"],
+            "daily_vlog": ["#DailyVlog", "#StoryVlog"],
+            "story": ["#StoryShort", "#ShortStory"],
         }
-        base.extend(genre_map.get(genre, ["#AIStory"]))
+        base.extend(genre_map.get(genre, ["#StoryShort"]))
 
         if "abandoned" in script_lower:
             base.extend(["#Abandoned", "#AbandonedPlaces"])

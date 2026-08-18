@@ -1,6 +1,5 @@
 import logging
 import re
-import textwrap
 from pathlib import Path
 from typing import List
 
@@ -8,194 +7,117 @@ logger = logging.getLogger(__name__)
 
 
 class CaptionEngine:
-    # High-impact words that deserve emphasis (story beats, emotions, reveals)
-    EMPHASIS_WORDS = {
-        # Story beats
-        "wait", "look", "never", "found", "discovered", "suddenly", "realized",
-        "remember", "forgot", "secret", "truth", "lie", "proof", "evidence",
-        # Emotions
-        "scared", "terrified", "shocked", "confused", "worried", "nervous",
-        "creepy", "unsettling", "impossible", "unbelievable", "insane",
-        # Identity/revelation
-        "myself", "me", "my", "mine", "that", "same", "identical", "exactly",
-        # Time
-        "today", "finally", "again", "before", "always", "never",
-        # Direct address
-        "mia", "watch", "listen", "guys", "you",
-    }
-
-    # Phrases that are full-line emphasis worthy (revelations, climaxes)
-    CLIMAX_PATTERNS = [
-        r"that's\s+me",
-        r"i'?ve\s+never\s+seen\s+this",
-        r"this\s+is\s+impossible",
-        r"this\s+can'?t\s+be\s+real",
-        r"i\s+don'?t\s+believe\s+this",
-        r"oh\s+my\s+god",
-        r"what\s+the\s+hell",
-        r"no\s+way",
-        r"it\s+can'?t\s+be",
-        r"this\s+is\s+wrong",
-        r"something\s+isn'?t\s+right",
-        r"i\s+need\s+to\s+get\s+out",
-        r"i\s+have\s+to\s+leave",
-    ]
+    """Generate ASS captions timed proportionally by word count for perfect TTS sync."""
 
     def generate_from_script(self, script: str, total_duration: float, output_path: str) -> str:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        phrases = self._phrases(script)
+        if not script or not str(script).strip():
+            raise ValueError("Empty script provided for captions")
 
-        # EVEN DISTRIBUTION: each phrase gets equal time.
-        # Word-count weighting drifts because TTS doesn't speak at constant WPS.
-        phrase_count = len(phrases) or 1
-        slot = total_duration / phrase_count
+        script = str(script).strip()
+        # Strip any leaked narrator prefix
+        script = re.sub(r'^(Mia:\s*)+', '', script, flags=re.IGNORECASE)
 
-        header = """[Script Info]
-Title: Mia Professional Shorts Captions
+        phrases = self._split_phrases(script)
+        phrases = [self._clean_phrase(p) for p in phrases if p.strip()]
+        if not phrases:
+            phrases = [script]
+
+        word_counts = [len(p.split()) for p in phrases]
+        total_words = sum(word_counts) or len(phrases)
+        time_per_word = total_duration / total_words
+
+        ass_path = Path(output_path)
+        ass_path.parent.mkdir(parents=True, exist_ok=True)
+
+        ass_header = self._ass_header()
+        events = self._build_events(phrases, word_counts, time_per_word, total_duration)
+
+        ass_path.write_text(ass_header + "\n".join(events), encoding="utf-8")
+        logger.info("Professional ASS captions: %s (%d phrases)", ass_path, len(phrases))
+        return str(ass_path)
+
+    def _split_phrases(self, text: str) -> List[str]:
+        """Split by sentence endings, then by commas if segments are too long."""
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        phrases: List[str] = []
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            if len(sent.split()) > 10:
+                parts = re.split(r'(?<=,)\s+', sent)
+                buf = ""
+                for part in parts:
+                    part = part.strip()
+                    if not part:
+                        continue
+                    if buf and len((buf + " " + part).split()) > 10:
+                        phrases.append(buf.strip())
+                        buf = part
+                    else:
+                        buf = (buf + " " + part).strip() if buf else part
+                if buf:
+                    phrases.append(buf.strip())
+            else:
+                phrases.append(sent)
+        return phrases
+
+    def _clean_phrase(self, phrase: str) -> str:
+        phrase = phrase.strip()
+        phrase = re.sub(r'^[,;:\-\s]+', '', phrase)
+        if not phrase:
+            return ""
+        if phrase[-1] not in ".!?":
+            if phrase[-1] == ",":
+                phrase = phrase[:-1] + "."
+            else:
+                phrase += "."
+        return phrase
+
+    def _ass_header(self) -> str:
+        # 1080x1920 Shorts. Large font, bottom safe area, readable outline.
+        return """[Script Info]
+Title: Mia Shorts Captions
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
-WrapStyle: 2
 ScaledBorderAndShadow: yes
-YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: MiaCaption,DejaVu Sans,68,&H00FFFFFF,&H0000D7FF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,5,2,2,72,72,255,1
-Style: MiaCaptionEmphasis,DejaVu Sans,72,&H0000D7FF,&H00FFFFFF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,6,2,2,72,72,255,1
+Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.5,0,2,40,40,150,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+
+    def _build_events(self, phrases: List[str], word_counts: List[int], time_per_word: float, total_duration: float) -> List[str]:
         events: List[str] = []
-        for index, phrase in enumerate(phrases):
-            start = index * slot
-            # Last phrase stretches to the exact end to avoid gaps
-            end = total_duration if index == phrase_count - 1 else (index + 1) * slot
+        current = 0.0
 
-            wrapped = self._wrap(phrase)
-            is_climax = self._is_climax_phrase(phrase)
-            styled = self._emphasize(self._escape(wrapped), force_emphasis=is_climax)
-            style_name = "MiaCaptionEmphasis" if is_climax else "MiaCaption"
-            fade = r"{\fad(120,120)\blur0.4}" if is_climax else r"{\fad(90,90)\blur0.35}"
+        for phrase, wc in zip(phrases, word_counts):
+            duration = max(wc * time_per_word, 1.0)
+            if current + duration > total_duration:
+                duration = max(total_duration - current, 0.1)
+                if duration <= 0:
+                    break
 
-            # BUG FIX: ASS Dialogue has 10 fields = 9 commas.
-            # Old code had 10 commas, causing the Text field to start with ",".
-            # Fixed: ,,0,0,0,,  (9 commas total)
-            events.append(
-                f"Dialogue: 0,{self._fmt(start)},{self._fmt(end)},{style_name},,0,0,0,,"
-                + fade + styled
-            )
+            start = self._fmt(current)
+            end = self._fmt(current + duration)
 
-        ass_path = str(Path(output_path).with_suffix(".ass"))
-        Path(ass_path).write_text(header + "\n".join(events) + "\n", encoding="utf-8")
-        logger.info("Professional ASS captions: %s (%d phrases, %d emphasis)",
-                     ass_path, len(phrases), sum(1 for e in events if "Emphasis" in e))
-        return ass_path
+            text = phrase.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+            events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+            current += duration
 
-    def _phrases(self, script: str) -> List[str]:
-        """Split script into 3-4 word phrases, cleaning stray punctuation."""
-        # Normalize spacing around punctuation so commas don't become orphaned tokens
-        script = re.sub(r"\s+([,;:!?.])", r"\1", script)
-        script = re.sub(r"\s+", " ", script).strip()
+        # Extend last caption to cover any rounding gap
+        if events and current < total_duration:
+            parts = events[-1].split(",", 3)
+            events[-1] = f"{parts[0]},{parts[1]},{self._fmt(total_duration)},{parts[3]}"
 
-        tokens = re.findall(r"\S+", script)
-        phrases: List[str] = []
-        current: List[str] = []
+        return events
 
-        for token in tokens:
-            # Skip tokens that are ONLY punctuation (these are segmentation artifacts)
-            if re.match(r"^[,;:!?.\"\'\u2018\u2019\u201C\u201D\-–—…]+$", token):
-                continue
-            current.append(token)
-            terminal = bool(re.search(r"[.!?]$", token))
-            # Break every 3-4 words, or at sentence boundary with at least 2 words
-            if len(current) >= 4 or (len(current) >= 2 and terminal):
-                phrases.append(self._clean_phrase(" ".join(current)))
-                current = []
-
-        if current:
-            if phrases and len(current) < 2:
-                # Append very short remainder to previous phrase
-                phrases[-1] = self._clean_phrase(phrases[-1] + " " + " ".join(current))
-            else:
-                phrases.append(self._clean_phrase(" ".join(current)))
-
-        # Final safety pass — strip any remaining leading punctuation from all phrases
-        phrases = [self._clean_phrase(p) for p in phrases if self._clean_phrase(p)]
-        return phrases or [""]
-
-    @staticmethod
-    def _clean_phrase(text: str) -> str:
-        """Remove malformed leading/trailing punctuation from subtitle phrases."""
-        text = text.strip()
-        if not text:
-            return ""
-        # Strip leading punctuation
-        text = re.sub(
-            r"^[\s,;:\-–—\"\'\u2018\u2019\u201C\u201D\u2026]+",
-            "",
-            text,
-        )
-        # Strip trailing stray punctuation
-        text = re.sub(
-            r"[\s,;:\-–—\"\'\u2018\u2019\u201C\u201D\u2026]+$",
-            "",
-            text,
-        )
-        # Fix detached punctuation: "word , word" -> "word, word"
-        text = re.sub(r"\s+([,;:!?.])", r"\1", text)
-        # Collapse multiple spaces
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
-
-    @staticmethod
-    def _wrap(text: str) -> str:
-        lines = textwrap.wrap(text, width=26, break_long_words=False, break_on_hyphens=False)
-        if len(lines) > 2:
-            words = text.split()
-            midpoint = max(1, len(words) // 2)
-            lines = [" ".join(words[:midpoint]), " ".join(words[midpoint:])]
-        return r"\N".join(lines[:2])
-
-    @staticmethod
-    def _escape(text: str) -> str:
-        marker = "__ASS_NEWLINE__"
-        text = text.replace(r"\N", marker)
-        text = text.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
-        return text.replace(marker, r"\N")
-
-    def _is_climax_phrase(self, phrase: str) -> bool:
-        phrase_lower = phrase.lower()
-        for pattern in self.CLIMAX_PATTERNS:
-            if re.search(pattern, phrase_lower):
-                return True
-        return False
-
-    def _emphasize(self, text: str, force_emphasis: bool = False) -> str:
-        """Selective emphasis: one word per phrase, or full phrase for climaxes."""
-        if force_emphasis:
-            return r"{\c&H00D7FF&\b1}" + text + r"{\c&HFFFFFF&\b0}"
-
-        words = re.split(r"(\s+|\\N)", text)
-        used = False
-        for i, word in enumerate(words):
-            if not word.strip() or word == r"\N":
-                continue
-            clean = re.sub(r"[^A-Za-z']", "", word).lower().rstrip("'")
-            if not used and clean in self.EMPHASIS_WORDS:
-                words[i] = r"{\c&H00D7FF&}" + word + r"{\c&HFFFFFF&}"
-                used = True
-        return "".join(words)
-
-    @staticmethod
-    def _fmt(seconds: float) -> str:
-        seconds = max(0.0, seconds)
+    def _fmt(self, seconds: float) -> str:
         h = int(seconds // 3600)
         m = int((seconds % 3600) // 60)
-        s = int(seconds % 60)
-        cs = int(round((seconds - int(seconds)) * 100))
-        if cs == 100:
-            s += 1
-            cs = 0
-        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+        s = seconds % 60
+        return f"{h}:{m:02d}:{s:05.2f}"

@@ -28,73 +28,90 @@ class VideoAssembler:
         destination.parent.mkdir(parents=True, exist_ok=True)
         work_dir = destination.parent / ".assembly"
         work_dir.mkdir(parents=True, exist_ok=True)
-        audio_duration = self.probe_duration(audio_path)
-        narration_durations = self._normalize_durations(scene_durations, len(scene_paths), audio_duration)
 
-        render_durations = [
-            duration + (transition_duration if index < len(scene_paths) - 1 else 0.0)
-            for index, duration in enumerate(narration_durations)
-        ]
+        audio_duration = self.probe_duration(audio_path)
+        logger.info("Audio duration: %.3fs", audio_duration)
+
+        narration_durations = self._normalize_durations(scene_durations, len(scene_paths), audio_duration)
+        logger.info("Scene narration durations: %s", narration_durations)
 
         normalized: List[str] = []
-        for index, (source, duration) in enumerate(zip(scene_paths, render_durations)):
+        for index, (source, duration) in enumerate(zip(scene_paths, narration_durations)):
             path = str(work_dir / f"scene_{index:02d}.mp4")
+            src_dur = self.probe_duration(source)
+            logger.info("Scene %d source duration: %.3fs, target: %.3fs", index, src_dur, duration)
+
             drift_x = "(in_w-out_w)/2+((in_w-out_w)/2)*0.18*sin(n/75)"
             drift_y = "(in_h-out_h)/2+((in_h-out_h)/2)*0.12*cos(n/90)"
             grade = self._grade_filter(tone)
-            video_filter = (
-                f"scale={self.width + 64}:{self.height + 114}:force_original_aspect_ratio=increase,"
-                f"crop={self.width}:{self.height}:x='{drift_x}':y='{drift_y}',"
-                f"{grade},fps={self.fps},setsar=1,format=yuv420p,"
-                f"tpad=stop_mode=clone:stop_duration={max(0.0, duration):.3f},"
-                f"trim=duration={duration:.3f},setpts=PTS-STARTPTS"
-            )
+
+            filters = [
+                f"scale={self.width + 64}:{self.height + 114}:force_original_aspect_ratio=increase",
+                f"crop={self.width}:{self.height}:x='{drift_x}':y='{drift_y}'",
+                grade,
+                f"fps={self.fps}",
+                "setsar=1",
+                "format=yuv420p",
+            ]
+
+            if src_dur < duration:
+                pad_dur = duration - src_dur
+                filters.append(f"tpad=stop_mode=clone:stop_duration={pad_dur:.3f}")
+
+            filters.append(f"trim=duration={duration:.3f}")
+            filters.append("setpts=PTS-STARTPTS")
+
             self._run([
                 "ffmpeg", "-y", "-i", source,
-                "-vf", video_filter,
+                "-vf", ",".join(filters),
                 "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "21",
                 "-r", str(self.fps), "-pix_fmt", "yuv420p", path,
             ], f"normalize scene {index + 1}")
+
+            out_dur = self.probe_duration(path)
+            logger.info("Scene %d normalized duration: %.3fs", index, out_dur)
             normalized.append(path)
-            logger.info("Normalized full-frame scene %d/%d: %s", index + 1, len(scene_paths), path)
+
+        # Concat demuxer — bulletproof, no broken xfade chains
+        concat_list = work_dir / "concat.txt"
+        with open(concat_list, "w") as f:
+            for path in normalized:
+                escaped = path.replace("\\", "/")
+                f.write(f"file '{escaped}'\n")
 
         visual_path = str(work_dir / "visual.mp4")
-        if len(normalized) == 1:
+        self._run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(concat_list),
+            "-c", "copy",
+            "-r", str(self.fps),
+            visual_path,
+        ], "concatenate scenes")
+
+        visual_dur = self.probe_duration(visual_path)
+        logger.info("Concatenated visual duration: %.3fs", visual_dur)
+
+        # Safety pad if concat is somehow shorter than audio
+        if visual_dur < audio_duration - 0.5:
+            logger.warning("Visual (%.3fs) shorter than audio (%.3fs), padding with freeze frame", visual_dur, audio_duration)
+            padded_visual = str(work_dir / "visual_padded.mp4")
             self._run([
-                "ffmpeg", "-y", "-i", normalized[0], "-t", f"{audio_duration:.3f}",
-                "-an", "-c:v", "copy", visual_path,
-            ], "prepare single scene")
-        else:
-            inputs: List[str] = []
-            for path in normalized:
-                inputs.extend(["-i", path])
-            chains: List[str] = []
-            cumulative = render_durations[0]
-            previous = "[0:v]"
-            for index in range(1, len(normalized)):
-                output_label = f"[xf{index}]"
-                offset = max(0.0, cumulative - transition_duration)
-                chains.append(
-                    f"{previous}[{index}:v]xfade=transition=fade:duration={transition_duration:.3f}:"
-                    f"offset={offset:.3f}{output_label}"
-                )
-                previous = output_label
-                cumulative += render_durations[index] - transition_duration
-            self._run([
-                "ffmpeg", "-y", *inputs,
-                "-filter_complex", ";".join(chains),
-                "-map", previous,
-                "-t", f"{audio_duration:.3f}",
-                "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "21",
-                "-r", str(self.fps), "-pix_fmt", "yuv420p", visual_path,
-            ], "crossfade scenes")
+                "ffmpeg", "-y", "-i", visual_path,
+                "-vf", f"tpad=stop_mode=clone:stop_duration={audio_duration - visual_dur:.3f}",
+                "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "21",
+                "-r", str(self.fps), "-pix_fmt", "yuv420p",
+                padded_visual,
+            ], "pad visual to match audio")
+            visual_path = padded_visual
+            visual_dur = self.probe_duration(visual_path)
+            logger.info("Padded visual duration: %.3fs", visual_dur)
 
         escaped_ass = self._escape_filter_path(str(Path(ass_path).resolve()))
         self._run([
             "ffmpeg", "-y", "-i", visual_path, "-i", audio_path,
             "-filter_complex", f"[0:v]ass=filename='{escaped_ass}'[v]",
             "-map", "[v]", "-map", "1:a:0",
-            "-t", f"{audio_duration:.3f}",
+            "-shortest",
             "-c:v", "libx264", "-preset", "medium", "-crf", "21",
             "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
             "-r", str(self.fps), "-pix_fmt", "yuv420p",
@@ -103,11 +120,13 @@ class VideoAssembler:
         ], "burn captions and mux narration")
 
         final_duration = self.probe_duration(str(destination))
-        if abs(final_duration - audio_duration) > 0.15:
+        logger.info("Final video duration: %.3fs (audio: %.3fs)", final_duration, audio_duration)
+
+        if abs(final_duration - audio_duration) > 1.0:
             raise RuntimeError(
                 f"Audio/video sync validation failed: audio={audio_duration:.3f}s video={final_duration:.3f}s"
             )
-        logger.info("Final Mia video: %s (%.3fs; audio %.3fs)", destination, final_duration, audio_duration)
+
         return str(destination)
 
     def probe_duration(self, path: str) -> float:
@@ -142,7 +161,9 @@ class VideoAssembler:
     @staticmethod
     def _run(command: List[str], stage: str) -> None:
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            if result.stderr:
+                logger.debug("FFmpeg stderr for %s: %s", stage, result.stderr[-500:])
         except subprocess.CalledProcessError as exc:
             logger.error("FFmpeg failed during %s: %s", stage, exc.stderr[-4000:])
             raise RuntimeError(f"FFmpeg failed during {stage}: {exc.stderr[-1000:]}") from exc

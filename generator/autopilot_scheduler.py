@@ -1,8 +1,10 @@
 import asyncio
+import json
 import logging
 import os
 import random
 import sqlite3
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,23 +18,15 @@ from generator.youtube_uploader import YouTubeUploader
 
 logger = logging.getLogger(__name__)
 
-# PKT is UTC+5
 PKT_OFFSET = timedelta(hours=5)
-
-# Schedule times in PKT (24h format)
 SCHEDULE_TIMES_PKT = [
-    (21, 0),   # 9:00 PM PKT
-    (2, 0),    # 2:00 AM PKT
-    (5, 0),    # 5:00 AM PKT
+    (21, 0),
+    (2, 0),
+    (5, 0),
 ]
-
-# Minimum gap between runs to avoid API burden (in minutes)
 MIN_GAP_MINUTES = 45
 
-
 class AutopilotScheduler:
-    """Background scheduler that auto-generates and uploads Mia videos on a fixed schedule."""
-
     def __init__(
         self,
         bot=None,
@@ -93,15 +87,12 @@ class AutopilotScheduler:
                     last_status TEXT
                 )
             """)
-            conn.execute("""
-                INSERT OR IGNORE INTO autopilot_stats (id) VALUES (1)
-            """)
+            conn.execute("INSERT OR IGNORE INTO autopilot_stats (id) VALUES (1)")
             conn.commit()
 
     def start(self):
-        """Start the autopilot scheduler in the background."""
         if not self.enabled:
-            logger.info("Autopilot is DISABLED (YOUTUBE_AUTO_POST != true). Skipping scheduler start.")
+            logger.info("Autopilot is DISABLED. Skipping scheduler start.")
             return
         if self._running:
             logger.warning("Autopilot scheduler already running")
@@ -111,7 +102,6 @@ class AutopilotScheduler:
         logger.info("Autopilot scheduler STARTED. Enabled times (PKT): %s", SCHEDULE_TIMES_PKT)
 
     def stop(self):
-        """Stop the autopilot scheduler."""
         self._running = False
         if self._task:
             self._task.cancel()
@@ -119,7 +109,6 @@ class AutopilotScheduler:
         logger.info("Autopilot scheduler STOPPED")
 
     async def _scheduler_loop(self):
-        """Main scheduler loop — checks every minute for scheduled runs."""
         logger.info("Autopilot scheduler loop running")
         while self._running:
             try:
@@ -131,7 +120,6 @@ class AutopilotScheduler:
                     if wait_seconds > 0:
                         logger.info("Next autopilot run at %s PKT (waiting %.0f minutes)",
                                    next_run.strftime("%H:%M"), wait_seconds / 60)
-                        # Sleep in chunks to allow clean shutdown
                         while wait_seconds > 60 and self._running:
                             await asyncio.sleep(60)
                             wait_seconds = (next_run - self._now_pkt()).total_seconds()
@@ -141,23 +129,20 @@ class AutopilotScheduler:
                     if self._running:
                         await self._run_autopilot_job(next_run)
                 else:
-                    # No scheduled runs found, wait and check again
                     await asyncio.sleep(60)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.exception("Autopilot scheduler error: %s", exc)
-                await asyncio.sleep(300)  # Wait 5 minutes on error
+                await asyncio.sleep(300)
 
     async def _run_autopilot_job(self, scheduled_time: datetime):
-        """Execute one autopilot run: generate story → video → upload → notify."""
         job_id = f"auto_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         logger.info("=" * 60)
         logger.info("AUTOPILOT RUN STARTING: %s | Scheduled: %s PKT",
                    job_id, scheduled_time.strftime("%H:%M"))
         logger.info("=" * 60)
 
-        # Record in DB
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO autopilot_schedule
@@ -170,58 +155,72 @@ class AutopilotScheduler:
             ))
             conn.commit()
 
-        discord_notifs = []  # Collect notifications to send
-
-        def status_callback(stage, progress, message):
-            logger.info("[%s] %s (%d%%) %s", job_id, stage, progress, message)
+        discord_notifs = []
 
         try:
-            # Step 1: Generate unique story
             logger.info("[%s] Generating unique story...", job_id)
             plan = self.story_generator.generate_unique_story()
             story_hash = self.story_generator._hash_script(plan["script"])
 
-            # Step 2: Run full pipeline
-            logger.info("[%s] Running video pipeline...", job_id)
-            pipeline = VideoPipeline(job_id, status_callback=status_callback)
-            loop = asyncio.get_running_loop()
-            metadata = await loop.run_in_executor(
-                None, pipeline.run, plan["script"], plan.get("genre", "daily_vlog")
-            )
-
-            video_path = metadata["video"]["path"]
-            video_url = metadata["video"]["url"]
-            seo_path = metadata["seo_file"]["path"]
-
-            # Step 3: Generate SEO
-            youtube_meta = self.seo.generate(plan)
-
-            # Step 4: Upload to YouTube (scheduled as private, will auto-publish)
-            logger.info("[%s] Uploading to YouTube...", job_id)
-            # Schedule for 5 minutes from now (or at the scheduled time if in future)
+            shared_db = os.getenv("JOB_DATABASE", "/root/sakana/jobs/queue.db")
             publish_time = max(
                 datetime.now(timezone.utc) + timedelta(minutes=5),
                 self._pkt_to_utc(scheduled_time) + timedelta(minutes=5),
             )
 
-            upload_result = await loop.run_in_executor(
-                None,
-                lambda: self.youtube.upload_video(
-                    video_path=video_path,
-                    title=youtube_meta.get("title", "Mia's Daily Vlog"),
-                    description=youtube_meta.get("description", ""),
-                    tags=youtube_meta.get("tags", []),
-                    category_id=os.getenv("YOUTUBE_CATEGORY_ID", "22"),
-                    privacy_status="private",
-                    scheduled_time=publish_time,
-                    thumbnail_path=None,  # Could generate thumbnail later
-                )
+            with sqlite3.connect(shared_db, timeout=30) as conn2:
+                conn2.execute("""
+                    INSERT INTO jobs
+                    (job_id, discord_user_id, discord_username, discord_channel_id,
+                     prompt, script, genre, status, stage, youtube_scheduled_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', 'QUEUED', ?)
+                """, (
+                    job_id, "autopilot", "autopilot", str(self.notification_channel_id or ""),
+                    plan["script"], plan["script"], plan.get("genre", "daily_vlog"),
+                    publish_time.isoformat(),
+                ))
+                conn2.commit()
+
+            logger.info("[%s] Spawning worker subprocess...", job_id)
+            cmd = [
+                sys.executable, "-m", "generator.worker_process",
+                "--job-id", job_id,
+                "--prompt", plan["script"],
+                "--genre", plan.get("genre", "daily_vlog"),
+                "--scheduled-time", publish_time.isoformat(),
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            stdout, stderr = await proc.communicate()
 
-            youtube_video_id = upload_result.get("video_id")
-            youtube_url = upload_result.get("youtube_url")
+            if proc.returncode != 0:
+                err = stderr.decode()[-1500:] if stderr else f"exit {proc.returncode}"
+                raise RuntimeError(f"Worker failed: {err}")
 
-            # Update story record
+            with sqlite3.connect(shared_db, timeout=30) as conn2:
+                conn2.row_factory = sqlite3.Row
+                row = conn2.execute(
+                    "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
+
+            if not row:
+                raise RuntimeError("Worker completed but job not found in shared DB")
+
+            row = dict(row)
+            metadata = {}
+            if row.get("metadata_json"):
+                try:
+                    metadata = json.loads(row["metadata_json"])
+                except json.JSONDecodeError:
+                    pass
+
+            video_url = row.get("output_url") or metadata.get("video", {}).get("url", "")
+            youtube_video_id = row.get("youtube_video_id")
+            youtube_url = f"https://youtube.com/watch?v={youtube_video_id}" if youtube_video_id else None
+
             self.story_generator.update_story_status(
                 script_hash=story_hash,
                 job_id=job_id,
@@ -229,7 +228,6 @@ class AutopilotScheduler:
                 status="uploaded",
             )
 
-            # Update schedule record
             with self._connect() as conn:
                 conn.execute("""
                     UPDATE autopilot_schedule
@@ -251,7 +249,7 @@ class AutopilotScheduler:
                 """)
                 conn.commit()
 
-            # Discord notification
+            youtube_meta = self.seo.generate(plan)
             discord_notifs.append({
                 "type": "success",
                 "job_id": job_id,
@@ -289,17 +287,14 @@ class AutopilotScheduler:
                 "scheduled": scheduled_time.strftime("%H:%M PKT"),
             })
 
-        # Send Discord notifications
         if self.bot and self.notification_channel_id:
             await self._send_discord_notifications(discord_notifs)
 
-        # Rest period between runs (at least MIN_GAP_MINUTES from now)
         next_available = datetime.now(timezone.utc) + timedelta(minutes=MIN_GAP_MINUTES)
         logger.info("[%s] Next autopilot job available after %s",
                    job_id, next_available.strftime("%H:%M UTC"))
 
     async def _send_discord_notifications(self, notifications):
-        """Send autopilot notifications to Discord."""
         import discord as discord_module
         try:
             channel = self.bot.get_channel(self.notification_channel_id)
@@ -336,7 +331,6 @@ class AutopilotScheduler:
             logger.exception("Failed to send autopilot Discord notification: %s", exc)
 
     def _get_stats_text(self) -> str:
-        """Get formatted autopilot statistics."""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM autopilot_stats WHERE id = 1").fetchone()
             if not row:
@@ -349,34 +343,27 @@ class AutopilotScheduler:
         )
 
     def _now_pkt(self) -> datetime:
-        """Get current time in PKT (UTC+5)."""
         return datetime.now(timezone.utc) + PKT_OFFSET
 
     def _pkt_to_utc(self, pkt_time: datetime) -> datetime:
-        """Convert PKT time to UTC."""
         return pkt_time - PKT_OFFSET
 
     def _get_next_run_time(self, now_pkt: datetime) -> Optional[datetime]:
-        """Find the next scheduled run time from now."""
         today = now_pkt.date()
         candidates = []
 
         for hour, minute in SCHEDULE_TIMES_PKT:
-            # Today's time
             candidate = datetime.combine(today, datetime.min.time().replace(hour=hour, minute=minute))
             candidate = candidate.replace(tzinfo=now_pkt.tzinfo)
             if candidate <= now_pkt:
-                # Already passed today, schedule for tomorrow
                 candidate += timedelta(days=1)
             candidates.append(candidate)
 
-        # Also check tomorrow's times
         for hour, minute in SCHEDULE_TIMES_PKT:
             candidate = datetime.combine(today + timedelta(days=1), datetime.min.time().replace(hour=hour, minute=minute))
             candidate = candidate.replace(tzinfo=now_pkt.tzinfo)
             candidates.append(candidate)
 
-        # Filter out runs that are too close to now (respect MIN_GAP)
         min_time = now_pkt + timedelta(minutes=MIN_GAP_MINUTES)
         valid = [c for c in candidates if c >= min_time]
 
@@ -385,7 +372,6 @@ class AutopilotScheduler:
         return None
 
     def get_status(self) -> Dict:
-        """Get current autopilot status."""
         next_run = self._get_next_run_time(self._now_pkt())
         stats = self._get_stats_text()
         return {
