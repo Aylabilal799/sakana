@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from generator.agnes_client import AgnesClient
 
@@ -9,344 +9,329 @@ logger = logging.getLogger(__name__)
 
 
 class StoryPlanner:
-    """Turn a user prompt into a coherent first-person Mia vlog with enforced continuity and emotional progression."""
+    def __init__(self, agnes_client: AgnesClient):
+        self.agnes = agnes_client
 
-    LOCATION_TRANSITIONS = {
-        "leave", "leaves", "left", "exit", "exits", "exited", "walk out", "walked out",
-        "step outside", "stepped outside", "go outside", "went outside", "outside",
-        "enter", "enters", "entered", "walk in", "walked in", "go in", "went in",
-        "arrive", "arrives", "arrived", "head to", "headed to", "go to", "went to",
-        "return", "returns", "returned", "back to", "go back", "went back",
-        "drive to", "drove to", "run to", "ran to", "approach", "approached",
-    }
+    def plan(self, user_prompt: str, max_attempts: int = 3) -> Dict:
+        """Plan a Mia vlog with action-driven scene descriptions for realistic footage."""
 
-    EMOTION_PROGRESSION = [
-        "calm", "curious", "interested", "uneasy", "concerned",
-        "suspicious", "worried", "nervous", "anxious", "shocked",
-        "frightened", "scared", "terrified", "determined"
-    ]
+        system_prompt = (
+            "You are a cinematic storyboard planner for Mia, a female daily vlogger and storyteller. "
+            "Your ONLY job is to return valid raw JSON. No markdown. No code blocks. No explanation.\n\n"
 
-    def __init__(self, agnes: AgnesClient):
-        self.agnes = agnes
+            "CRITICAL VIDEO GENERATION RULES — READ FIRST:\n"
+            "1. ACTION > CAMERA EFFECTS. Every scene must show Mia PHYSICALLY DOING something from the script. "
+            "NEVER describe a scene as just 'Mia standing' or 'Mia looking at camera with zoom effect'.\n"
+            "2. When Mia changes location → create a NEW scene showing her IN that new location.\n"
+            "3. When Mia performs an action → SHOW her physically performing it: walking, entering, picking up, opening, reacting, talking.\n"
+            "4. Use a mixture of shots: wide shots, medium shots, close-ups, over-the-shoulder, handheld vlog style.\n"
+            "5. Use normal cinematic cuts between scenes. NO continuous zoom in/out. NO keeping Mia in the same position.\n"
+            "6. Mia must naturally walk, move, interact with objects, use her hands, look around, react emotionally.\n"
+            "7. Keep Mia's face, hairstyle, clothing, body proportions consistent across every scene.\n"
+            "8. The viewer should feel they are watching REAL FOOTAGE of Mia living through the story, not one image being zoomed.\n"
+            "9. Read the script first. Identify EVERY action and location change. Create a SEPARATE visual shot for EACH story beat.\n"
+            "10. Do NOT skip or visually substitute actions described in the script.\n\n"
 
-    def plan(self, user_prompt: str) -> Dict:
-        prompt = user_prompt.strip()
-        if not prompt:
-            raise ValueError("The Mia prompt cannot be empty")
+            "Required JSON structure:\n"
+            "{\n"
+            '  \"title\": \"catchy Shorts title without Mia prefix, action-driven, curiosity hook\",\n'
+            '  \"script\": \"first person vlog narration, natural spoken, 25-40 seconds\",\n'
+            '  \"scenes\": [\n'
+            '    {\"description\": \"SPECIFIC visual description: shot type + exact action + location + Mia expression + camera style\", \"mood\": \"neutral|tense|curious|frightened\"},\n'
+            '    {\"description\": \"...\", \"mood\": \"...\"},\n'
+            '    {\"description\": \"...\", \"mood\": \"...\"},\n'
+            '    {\"description\": \"...\", \"mood\": \"...\"}\n'
+            '  ],\n'
+            '  \"genre\": \"daily_vlog\"\n'
+            "}\n\n"
 
-        instruction = f"""Create one short-form vertical daily-vlog episode starring Mia, a recurring adult female influencer. The user's request is:
+            "Scene description rules:\n"
+            "- MUST specify the shot type: wide shot, medium shot, close-up, over-the-shoulder, POV, handheld vlog selfie, tracking shot.\n"
+            "- MUST describe the EXACT action: 'Mia walking out of a coffee shop pushing the door open', 'Mia bending down to take a silver key from a small girl's hand', 'Mia inserting a key into a door lock, her hand trembling slightly'.\n"
+            "- MUST include the location and environment: street, apartment building, hallway, room interior.\n"
+            "- MUST include Mia's expression and body language: skeptical, confused, shocked, scared.\n"
+            "- MUST include camera movement only if it serves the action: 'handheld camera following Mia as she walks', 'close-up tracking shot of the key approaching the lock'.\n"
+            "- NEVER use: 'zoom in on Mia', 'slow pan across Mia', 'Mia standing still', 'static shot of Mia', 'Mia at her desk'.\n"
+            "- If the script mentions a coffee shop → scene 1 shows Mia EXITING the coffee shop, pushing the door, stepping onto the sidewalk.\n"
+            "- If a little girl stops her → scene 2 shows the girl tugging Mia's sleeve, looking up, holding out the key.\n"
+            "- If Mia looks at an apartment building → scene 3 shows Mia looking UP at the building, then WALKING toward the entrance.\n"
+            "- If Mia opens a door → scene 4 shows her hand turning the key, door creaking open, her face reacting to what's inside.\n\n"
 
-{prompt}
+            "Title rules:\n"
+            "- NO 'Mia:' prefix\n"
+            "- NO filler words like 'Exploring' or 'Journey'\n"
+            "- NO words like 'AI', 'AI-generated', 'AI video', 'AI character', 'AI influencer' in the title, script, or anywhere\n"
+            "- Focus on STORY, MYSTERY, EMOTION and EVENTS\n"
+            "- Action-driven, curiosity hook, sounds like a real Shorts creator wrote it\n"
+            "- Examples: 'A Little Girl Handed Me a Key With My Name On It', 'I Opened the Door and Froze', 'Every Photo in This Hallway Was of Me'\n\n"
 
-Return ONLY valid JSON with this exact shape:
-{{
-  "title": "short episode title",
-  "genre": "daily_vlog|travel|mystery|horror|reaction|story",
-  "tone": "warm natural|cool suspense|dark atmospheric",
-  "outfit": "one concise continuity outfit description",
-  "script": "35-55 second first-person narration spoken by Mia. Natural conversational vlog speech. No awkward fragments.",
-  "opening_hook": "the FIRST 1-2 sentences that immediately establish the mystery/premise. Must be attention-grabbing and create curiosity without spoiling the ending.",
-  "final_reveal": "the climactic final 2-3 sentences. Must deliver a payoff, unanswered question, or disturbing realization. NOT just 'Mia looks scared.'",
-  "key_objects": [
-    {{"name": "object_id", "type": "photograph|phone|letter|key|book|document|prop", "description": "visual description", "introduced_scene": 1}}
-  ],
-  "emotional_arc": ["curious", "uneasy", "shocked"],
-  "scenes": [
-    {{
-      "index": 1,
-      "narration": "exact contiguous portion of the script",
-      "location": "specific location",
-      "location_change_reason": "explicit script justification or 'same_location'",
-      "action": "what Mia physically does",
-      "shot_type": "selfie medium|handheld medium|POV|establishing|medium close-up|close-up|reaction close-up|third-person wide|object close-up|walking shot|over-the-shoulder",
-      "visual_prompt": "specific visual beat",
-      "camera_motion": "subtle push-in|slow pull-out|gentle handheld drift|slow pan|subtle tracking",
-      "lighting": "cohesive lighting for the episode",
-      "expression": "Mia's natural expression",
-      "objects_visible": ["object_id"],
-      "objects_held": ["object_id"],
-      "emotional_state": "curious",
-      "story_event": "what narrative event happens in this scene",
-      "transition": "cut|crossfade"
-    }}
-  ]
-}}
+            "Script rules:\n"
+            "- First person, spoken naturally, like Mia is telling the story directly to her phone camera\n"
+            "- Include verbal fillers: 'right?', 'okay?', 'I swear', 'no joke'\n"
+            "- 25-40 seconds when read at natural speaking pace\n"
+            "- NO mention of being AI, generated, virtual, or artificial anywhere in the script\n"
+            "- Mia is a real character in a fictional daily-vlog series\n\n"
 
-CRITICAL RULES:
-
-1. OPENING HOOK (MANDATORY): The script MUST start with an attention-grabbing first sentence that immediately communicates the unusual event. Examples:
-   - "I found a hidden room in my new apartment."
-   - "These photos shouldn't exist."
-   - "My mirror is doing something it shouldn't."
-   Do NOT start with boring exposition like "I moved in three days ago" or "So I was walking around..."
-
-2. NATURAL SPEECH: Mia should sound like a real person talking to her camera. Use contractions, casual language, natural pauses. Avoid literary exposition or awkward fragments like "Too fine, maybe."
-
-3. FINAL REVEAL (MANDATORY): The ending must deliver a payoff, not just show Mia looking scared. Examples:
-   - A photograph shows something impossible
-   - A date on an object is in the future
-   - Mia realizes she's been watched
-   - The object reveals a hidden detail
-   End with an unanswered question or disturbing realization.
-
-4. CONTINUITY:
-   - Mia stays in the SAME location across consecutive scenes UNLESS the script explicitly describes her moving.
-   - Never invent a new location not justified by the narration.
-   - Objects persist: if Mia is holding an object, she continues holding it unless the script says she puts it down.
-   - Use 4-7 scenes. Each scene must correspond to a clear narrative beat.
-
-5. FIRST SCENE: Must open with Mia already engaged in the premise — NO pure establishing shots without Mia and the hook visible. The first visual must support the opening hook.
-
-6. FINAL SCENE: Must deliver payoff around the central mystery object or revelation. The final visual should be the strongest shot in the video.
-
-7. EMOTIONAL PROGRESSION: Build logically. For mystery/horror: calm → curious → uneasy → suspicious → shocked → frightened.
-
-8. SHOT TYPES: Prefer selfie medium, handheld medium, POV, natural close-up. Avoid extreme close-ups that cause facial distortion.
-
-9. Every scene must have location_change_reason explaining same vs different location.
-
-10. Track key_objects throughout — once introduced, they remain in scenes where appropriate.
-"""
-        raw = self.agnes.chat(
-            instruction,
-            max_tokens=4000,
-            temperature=0.55,
-            system_prompt="You are a strict JSON-only short-form video writer. You write natural conversational vlog scripts with strong hooks and satisfying endings. You enforce physical continuity, object persistence, and emotional progression.",
+            "Return ONLY raw JSON. Use double quotes for all strings. No trailing commas."
         )
-        data = self._parse_json(raw)
-        return self._validate_and_fix(data, prompt)
 
-    @staticmethod
-    def _parse_json(raw: str) -> Dict:
-        text = raw.strip()
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        for attempt in range(1, max_attempts + 1):
+            temp = 0.5 if attempt == 1 else 0.3
+            prompt = f"Plan a Mia vlog about: {user_prompt}"
+
+            if attempt > 1:
+                prompt += (
+                    "\n\nPrevious attempt failed. Return ONLY valid raw JSON. "
+                    "Make sure every scene description shows a SPECIFIC ACTION with a SPECIFIC SHOT TYPE. "
+                    "No zoom-only scenes. No static standing shots."
+                )
+
+            try:
+                logger.info("Story plan attempt %d/%d (temp=%.1f)", attempt, max_attempts, temp)
+                raw = self.agnes.chat(
+                    prompt,
+                    system_prompt=system_prompt,
+                    temperature=temp,
+                    max_tokens=4000,
+                )
+                logger.info("Raw response length: %d chars", len(str(raw)))
+                logger.debug("Raw response (first 1200 chars): %s", str(raw)[:1200])
+
+                if not raw or not str(raw).strip():
+                    raise ValueError("Empty response from API")
+
+                data = self._extract_and_repair_json(str(raw))
+                self._validate_and_fix(data, user_prompt)
+                logger.info("Story plan succeeded on attempt %d", attempt)
+                return data
+
+            except Exception as e:
+                logger.warning("Attempt %d/%d failed: %s", attempt, max_attempts, e)
+                if attempt >= max_attempts:
+                    raise RuntimeError(f"Story planner failed after {max_attempts} attempts: {e}")
+
+    def _extract_and_repair_json(self, raw: str) -> Dict:
+        """Extract JSON from messy LLM output with multiple repair strategies."""
+        text = str(raw).strip()
+
+        # Remove markdown code blocks
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text)
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            raise RuntimeError("Story planner did not return a JSON object")
+        text = text.strip()
+
+        # If response has explanatory text before JSON, extract the JSON object
+        if not text.startswith("{"):
+            match = re.search(r"(\{[\s\S]*\})", text)
+            if match:
+                text = match.group(1).strip()
+
+        # Strategy 1: Parse as-is
         try:
-            return json.loads(text[start:end + 1])
-        except json.JSONDecodeError as exc:
-            logger.error("Invalid story JSON: %s", text[:1500])
-            raise RuntimeError(f"Story planner returned invalid JSON: {exc}") from exc
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
 
-    def _validate_and_fix(self, data: Dict, original_prompt: str) -> Dict:
-        script = str(data.get("script") or "").strip()
-        scenes = data.get("scenes")
-        if not script or not isinstance(scenes, list) or not scenes:
-            raise RuntimeError("Story plan is missing script or scenes")
+        # Strategy 2: Fix trailing commas before } or ]
+        repaired = re.sub(r",(\s*[}\]])", r"\1", text)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
 
-        # Build object registry
-        objects = {}
-        for obj in data.get("key_objects", []):
-            if isinstance(obj, dict) and obj.get("name"):
-                objects[obj["name"]] = obj
+        # Strategy 3: Fix single quotes to double quotes
+        repaired = text.replace("'", '"')
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
 
-        # Normalize and enforce continuity
-        cleaned = self._enforce_continuity(scenes, script, objects)
-        if len(cleaned) < 3:
-            cleaned = self._fallback_scenes(script)
+        # Strategy 4: Extract fields with regex fallback
+        logger.warning("JSON unparseable, attempting field extraction. Raw: %s", text[:800])
+        return self._extract_fields_fallback(text)
 
-        # Rebuild script from scene narrations
-        scene_script = " ".join(s["narration"] for s in cleaned if s["narration"]).strip()
-        if scene_script:
-            script = scene_script
+    def _extract_fields_fallback(self, text: str) -> Dict:
+        """Last resort: extract key fields with regex."""
+        result: Dict = {}
 
-        # Ensure emotional arc
-        emotional_arc = data.get("emotional_arc", [])
-        if not emotional_arc and cleaned:
-            emotional_arc = [s.get("emotional_state", "curious") for s in cleaned]
+        m = re.search(r'"title"\s*:\s*"([^"]+)"', text)
+        if m:
+            result["title"] = m.group(1)
 
-        # Validate opening hook
-        opening_hook = str(data.get("opening_hook") or "").strip()
-        if not opening_hook and cleaned:
-            opening_hook = cleaned[0]["narration"]
-        # Ensure hook is actually attention-grabbing
-        hook_lower = opening_hook.lower()
-        weak_starts = ["i moved", "so i", "i was", "i am", "i'm just", "today i", "hey guys"]
-        if any(hook_lower.startswith(w) for w in weak_starts) and len(cleaned) > 1:
-            # Try to find a better hook from the first scene's action/visual
-            visual = str(cleaned[0].get("visual_prompt", "")).strip()
-            if visual and len(visual) > 20:
-                opening_hook = visual[:100]
+        m = re.search(r'"script"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+        if m:
+            result["script"] = m.group(1).replace('\\"', '"').replace("\n", " ").strip()
 
-        # Validate final reveal
-        final_reveal = str(data.get("final_reveal") or "").strip()
-        if not final_reveal and cleaned:
-            final_reveal = cleaned[-1]["narration"]
-        # Ensure final reveal isn't generic
-        generic_endings = ["mia looks scared", "she looks scared", "mia is frightened", "she is frightened",
-                          "mia looks terrified", "she looks terrified", "end", "the end"]
-        final_lower = final_reveal.lower()
-        if any(g in final_lower for g in generic_endings):
-            # Generate a stronger ending from the story context
-            logger.warning("Generic ending detected, strengthening final reveal")
-            # Use the last scene's story event if available
-            last_event = str(cleaned[-1].get("story_event", "")).strip()
-            if last_event and len(last_event) > 20:
-                final_reveal = last_event[:200]
+        m = re.search(r'"scenes"\s*:\s*(\[[\s\S]*?\])', text, re.DOTALL)
+        if m:
+            scenes_text = m.group(1)
+            scenes_text = re.sub(r",(\s*[}\]])", r"\1", scenes_text)
+            try:
+                result["scenes"] = json.loads(scenes_text)
+            except json.JSONDecodeError:
+                pass
 
-        return {
-            "title": str(data.get("title") or "Mia's Daily Vlog").strip()[:100],
-            "genre": str(data.get("genre") or "daily_vlog").strip().lower(),
-            "tone": str(data.get("tone") or "warm natural").strip(),
-            "outfit": str(data.get("outfit") or "cream fitted top and high-waisted blue jeans").strip(),
-            "script": script,
-            "opening_hook": opening_hook[:300],
-            "final_reveal": final_reveal[:300],
-            "emotional_arc": emotional_arc,
-            "key_objects": list(objects.values()),
-            "scenes": cleaned,
-            "source_prompt": original_prompt,
-        }
+        result["genre"] = "daily_vlog"
+        return result
 
-    def _enforce_continuity(self, scenes: List[Dict], script: str, objects: Dict) -> List[Dict]:
-        script_lower = script.lower()
-        cleaned = []
-        prev_location = None
-        prev_objects_held = set()
-        prev_emotion = "calm"
+    def _validate_and_fix(self, data: Dict, user_prompt: str) -> None:
+        """Ensure all required fields exist and scenes are action-driven."""
 
-        for i, scene in enumerate(scenes[:7], 1):
-            if not isinstance(scene, dict):
-                continue
+        if "title" not in data or not data["title"]:
+            data["title"] = self._generate_title(user_prompt)
 
-            narration = str(scene.get("narration") or "").strip()
-            location = str(scene.get("location") or prev_location or "the current location").strip()
-            change_reason = str(scene.get("location_change_reason") or "").strip()
-            shot = str(scene.get("shot_type") or "handheld medium vlog shot").strip().lower()
+        if "script" not in data or not data["script"]:
+            raise RuntimeError("Missing required field: script")
 
-            # Fix unjustified location jumps
-            if prev_location and location != prev_location:
-                justified = self._is_location_change_justified(narration, prev_location, location)
-                if not justified:
-                    logger.warning(
-                        "Continuity fix: scene %d changed location '%s' -> '%s' without justification. Reverting.",
-                        i, prev_location, location
-                    )
-                    location = prev_location
-                    change_reason = f"same_location (reverted from {location})"
+        if "scenes" not in data or not isinstance(data["scenes"], list) or len(data["scenes"]) == 0:
+            logger.warning("No scenes found, auto-generating from script")
+            data["scenes"] = self._generate_scenes_from_script(data["script"])
 
-            # Track objects
-            objects_visible = set()
-            for obj_name in scene.get("objects_visible", []):
-                if obj_name in objects:
-                    objects_visible.add(obj_name)
+        if "genre" not in data:
+            data["genre"] = "daily_vlog"
 
-            objects_held = set()
-            for obj_name in scene.get("objects_held", []):
-                if obj_name in objects:
-                    objects_held.add(obj_name)
+        # Clean title
+        title = str(data["title"]).strip()
+        if title.lower().startswith("mia:"):
+            title = title[4:].strip()
+        # Strip AI-related words from title
+        title = self._strip_ai_words(title)
+        data["title"] = title
 
-            # Persist held objects unless script says dropped
-            for held in prev_objects_held:
-                if held not in objects_held:
-                    drop_words = ["put", "down", "set", "drop", "placed", "away", "hide", "hid", "leave", "left behind"]
-                    narration_lower = narration.lower()
-                    if not any(dw in narration_lower for dw in drop_words):
-                        objects_visible.add(held)
-                        objects_held.add(held)
-                        logger.info("Continuity: keeping object '%s' in scene %d", held, i)
+        # Clean script
+        script = str(data["script"]).strip()
+        script = re.sub(r'^(Mia:\s*)+', '', script, flags=re.IGNORECASE)
+        script = self._strip_ai_words(script)
+        data["script"] = script
 
-            # Fix shot types
-            if "extreme" in shot or "macro" in shot:
-                shot = "medium close-up"
-            if "establishing" in shot and i > 1:
-                shot = "handheld medium vlog shot"
-
-            # First scene must show Mia + hook
-            if i == 1:
-                if "establishing" in shot and "mia" not in str(scene.get("visual_prompt", "")).lower():
-                    shot = "selfie medium"
-
-            # Final scene should be reaction/close-up payoff
-            if i == len(scenes) and "wide" in shot:
-                shot = "reaction close-up"
-
-            # Validate emotional state
-            emotional_state = str(scene.get("emotional_state") or prev_emotion).strip()
-            if not emotional_state or emotional_state.lower() == "neutral":
-                emotional_state = self._derive_emotion(i, len(scenes))
-
-            cleaned.append({
-                "index": i,
-                "narration": narration,
-                "location": location,
-                "location_change_reason": change_reason or ("same_location" if location == prev_location else "script transition"),
-                "action": str(scene.get("action") or narration or "Mia records her vlog").strip(),
-                "shot_type": shot,
-                "visual_prompt": str(scene.get("visual_prompt") or scene.get("action") or narration).strip(),
-                "camera_motion": str(scene.get("camera_motion") or "subtle handheld push-in").strip(),
-                "lighting": str(scene.get("lighting") or self._default_lighting(scene.get("tone"))).strip(),
-                "expression": str(scene.get("expression") or "natural and emotionally appropriate").strip(),
-                "objects_visible": sorted(objects_visible),
-                "objects_held": sorted(objects_held),
-                "emotional_state": emotional_state,
-                "story_event": str(scene.get("story_event") or narration[:100]).strip(),
-                "transition": "cut" if str(scene.get("transition", "")).lower() == "cut" else "crossfade",
+        # Ensure at least 4 scenes for a dynamic story
+        while len(data["scenes"]) < 4:
+            data["scenes"].append({
+                "description": "Mia reacting with genuine emotion to the story events, close-up handheld vlog shot, natural lighting",
+                "mood": "neutral"
             })
 
-            prev_location = location
-            prev_objects_held = objects_held
-            prev_emotion = emotional_state
+        # Detect and fix generic/zoom-only scene descriptions
+        script_lower = data["script"].lower()
+        has_specific = any(x in script_lower for x in [
+            "coffee", "girl", "key", "apartment", "street", "phone", "door",
+            "restaurant", "car", "building", "found", "handed", "walked", "opened",
+            "hallway", "photo", "footstep", "ran", "looked", "turned"
+        ])
 
-        return cleaned
+        generic_patterns = [
+            r"zoom\s+(in|out)",
+            r"slow\s+(pan|zoom)",
+            r"static\s+shot",
+            r"Mia\s+standing\s+(still|in)",
+            r"Mia\s+at\s+her\s+desk",
+            r"Mia\s+sitting\s+at",
+            r"desk\s+lamp",
+            r"whiteboard",
+            r"just\s+looking\s+at\s+camera",
+        ]
 
-    def _is_location_change_justified(self, narration: str, from_loc: str, to_loc: str) -> bool:
-        narration_lower = narration.lower()
-        for phrase in self.LOCATION_TRANSITIONS:
-            if phrase in narration_lower:
-                return True
-        to_simple = to_loc.lower().replace("the ", "").replace("a ", "").split()[0]
-        if to_simple in narration_lower:
-            return True
-        return False
+        for i, scene in enumerate(data["scenes"]):
+            desc = str(scene.get("description", ""))
+            # Strip AI words from scene descriptions too
+            scene["description"] = self._strip_ai_words(desc)
+            desc_lower = desc.lower()
 
-    def _derive_emotion(self, scene_index: int, total_scenes: int) -> str:
-        if total_scenes <= 1:
-            return "curious"
-        ratio = (scene_index - 1) / max(total_scenes - 1, 1)
-        idx = int(ratio * (len(self.EMOTION_PROGRESSION) - 1))
-        return self.EMOTION_PROGRESSION[min(idx, len(self.EMOTION_PROGRESSION) - 1)]
+            is_generic = any(re.search(p, desc_lower) for p in generic_patterns)
+
+            if is_generic and has_specific and i < 4:
+                logger.warning("Replacing generic/zoom scene %d with action-driven visual", i)
+                if "coffee" in script_lower and i == 0:
+                    scene["description"] = "Wide shot: Mia pushing open a coffee shop door and stepping out onto a busy sidewalk, afternoon sunlight, she checks her phone, handheld vlog camera following her movement"
+                elif "girl" in script_lower and i == 1:
+                    scene["description"] = "Medium shot: A young girl in a hoodie tugging Mia's sleeve on the sidewalk, looking up at her with wide eyes, holding out a small silver key in her open palm, city street background"
+                elif "key" in script_lower and i == 2:
+                    scene["description"] = "Close-up tracking shot: Mia's hand reaching out to take the silver key, then turning it over in her fingers, examining it with a confused expression, shallow depth of field"
+                elif "apartment" in script_lower or "building" in script_lower:
+                    scene["description"] = "Low angle wide shot: Mia looking up at an apartment building facade, then walking toward the entrance with hesitant steps, handheld camera following from behind"
+                elif "door" in script_lower:
+                    scene["description"] = "Over-the-shoulder close-up: Mia's hand inserting the silver key into a door lock, turning it, the door slowly creaking open, her face partially visible showing shock"
+                elif "hallway" in script_lower or "photo" in script_lower:
+                    scene["description"] = "Wide interior shot: Mia stepping into a narrow hallway, walls covered floor-to-ceiling with photographs, she freezes mid-step, her mouth slightly open in disbelief, warm yellow lighting"
+                elif "footstep" in script_lower:
+                    scene["description"] = "Close-up on Mia's face: her eyes widening in fear as she hears footsteps, she slowly turns her head toward the sound, dark hallway behind her"
+                else:
+                    scene["description"] = f"Dynamic action shot showing the key moment from this part of the story: {data['script'][:120]}..., handheld vlog style, natural movement"
+
+        # Final validation: every scene must contain an action verb
+        action_verbs = ["walking", "running", "pushing", "opening", "closing", "turning", "looking", "reaching",
+                       "picking", "holding", "stepping", "entering", "reacting", "talking", "following",
+                       "pulling", "inserting", "examining", "walking", "stepping", "bending", "taking"]
+        for i, scene in enumerate(data["scenes"]):
+            desc_lower = str(scene.get("description", "")).lower()
+            has_action = any(verb in desc_lower for verb in action_verbs)
+            if not has_action:
+                logger.warning("Scene %d still has no action verb, injecting movement", i)
+                scene["description"] = "Handheld tracking shot following Mia as she moves through the scene, " + str(scene.get("description", ""))
 
     @staticmethod
-    def _default_lighting(tone) -> str:
-        tone = str(tone or "").lower()
-        if "dark" in tone or "horror" in tone:
-            return "dark cinematic practical light with controlled shadows"
-        if "cool" in tone or "suspense" in tone:
-            return "slightly cool realistic suspense lighting"
-        return "natural warm realistic daylight"
+    def _strip_ai_words(text: str) -> str:
+        """Remove AI-related words from text while preserving natural flow."""
+        # List of AI-related words/phrases to strip
+        ai_patterns = [
+            r'\bAI[- ]?generated?\b',
+            r'\bAI[- ]?influencer?\b',
+            r'\bAI[- ]?character?\b',
+            r'\bAI[- ]?video?\b',
+            r'\bAI[- ]?vlog?\b',
+            r'\bAI[- ]?story?\b',
+            r'\bartificial intelligence\b',
+            r'\bvirtual influencer\b',
+            r'\bvirtual character\b',
+            r'\bgenerated by AI\b',
+            r'\bcreated by AI\b',
+            r'\bAI[- ]?created\b',
+            r'\bAI[- ]?based\b',
+            r'\bnot a real person\b',
+            r'\bdigital creator\b',
+            r'\bvirtual creator\b',
+        ]
+        cleaned = text
+        for pattern in ai_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        # Clean up double spaces and stray punctuation from removals
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        cleaned = re.sub(r'\s+([.,!?])', r'\1', cleaned)
+        return cleaned.strip()
 
-    def _fallback_scenes(self, script: str) -> List[Dict]:
-        sentences = [self._clean_sentence(s) for s in re.split(r"(?<=[.!?])\s+", script) if s.strip()]
-        count = min(6, max(3, len(sentences)))
-        groups = [[] for _ in range(count)]
-        for i, sentence in enumerate(sentences):
-            groups[min(i * count // max(len(sentences), 1), count - 1)].append(sentence)
-        shots = ["selfie medium", "handheld medium", "POV", "medium close-up", "reaction close-up", "close-up"]
-        emotions = ["curious", "interested", "uneasy", "concerned", "suspicious", "shocked"]
-        return [{
-            "index": i + 1,
-            "narration": " ".join(group),
-            "location": "the story's current location",
-            "location_change_reason": "same_location" if i == 0 else "script continuation",
-            "action": "Mia acts out this story beat while recording her vlog",
-            "shot_type": shots[i % len(shots)],
-            "visual_prompt": " ".join(group),
-            "camera_motion": "subtle handheld push-in",
-            "lighting": "natural cohesive cinematic lighting",
-            "expression": "natural and emotionally appropriate",
-            "objects_visible": [],
-            "objects_held": [],
-            "emotional_state": emotions[i % len(emotions)],
-            "story_event": " ".join(group)[:100],
-            "transition": "crossfade" if i else "cut",
-        } for i, group in enumerate(groups) if group]
+    def _generate_title(self, prompt: str) -> str:
+        prompt = prompt.strip()
+        if len(prompt) > 60:
+            prompt = prompt[:57] + "..."
+        prompt = re.sub(r'^(Mia|story|about|vlog|video|short)\s*[:,-]\s*', '', prompt, flags=re.IGNORECASE)
+        title = prompt[:80] or "Mia's Story"
+        return self._strip_ai_words(title)
 
-    @staticmethod
-    def _clean_sentence(text: str) -> str:
-        text = text.strip()
-        text = re.sub(r"^\s*[\s,;:\-–—]+", "", text)
-        text = re.sub(r"\s+", " ", text)
-        return text
+    def _generate_scenes_from_script(self, script: str) -> List[Dict]:
+        """Break script into 4 action-driven visual scenes."""
+        sentences = re.split(r'(?<=[.!?])\s+', script)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        scenes = []
+        chunk_size = max(1, len(sentences) // 4)
+
+        shot_types = [
+            "Wide establishing shot",
+            "Medium handheld vlog shot",
+            "Close-up detail shot",
+            "Over-the-shoulder reaction shot"
+        ]
+
+        for i in range(0, min(len(sentences), 4 * chunk_size), chunk_size):
+            chunk = " ".join(sentences[i:i + chunk_size])
+            desc = f"{shot_types[len(scenes) % 4]}: {chunk[:200]}. Natural handheld camera movement following the action."
+            scenes.append({
+                "description": self._strip_ai_words(desc),
+                "mood": "neutral"
+            })
+
+        while len(scenes) < 4:
+            scenes.append({
+                "description": f"{shot_types[len(scenes) % 4]}: Mia reacting emotionally to the story, natural movement, handheld vlog style",
+                "mood": "neutral"
+            })
+
+        return scenes

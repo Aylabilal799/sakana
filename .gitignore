@@ -82,3 +82,9 @@ temp/
 __pycache__/
 *.pyc
 *.pyo
+
+# YouTube / Google OAuth credentials
+generator/youtube_client_secret.json
+generator/youtube_token.json
+config/youtube_client_secret.json
+config/youtube_token.json
