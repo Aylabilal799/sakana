@@ -11,44 +11,47 @@ from generator.agnes_client import AgnesClient
 logger = logging.getLogger(__name__)
 
 # Mia influencer daily vlog themes — rotates to avoid repetition
+# Mix: mostly relatable daily-life / emotional moments, with a light "soft mystery"
+# strand mixed in for curiosity. Deliberately avoids horror/supernatural escalation
+# (hidden rooms, doppelgangers, moving reflections) to keep the vlog feel intact.
 MIA_THEMES = [
-    # Daily life / relatable
-    "Mia shares a strange coincidence that happened to her today that she cannot explain.",
-    "Mia found something unexpected in her apartment that does not belong to her.",
-    "Mia noticed her neighbor doing something odd and decided to investigate subtly.",
+    # Emotional / relatable daily life
+    "Mia had a quiet morning alone and realized something important about herself.",
+    "Mia spent the whole afternoon cleaning her apartment and found an old memory.",
+    "Mia tried to have a normal productive day but everything kept going wrong in small ways.",
+    "Mia went for a late evening walk and ended up talking to a stranger who said something unexpected.",
+    "Mia stayed up too late and started overthinking her life while staring at the ceiling.",
+    "Mia made herself breakfast and suddenly felt extremely lonely for no clear reason.",
+    "Mia received a message from someone she used to care about and didn't know how to reply.",
+    "Mia spent hours rearranging her room because she felt stuck in her current life.",
+    "Mia watched the rain from her window and started remembering a specific day from last year.",
+    "Mia almost cancelled all her plans today just to stay in bed, but forced herself to go out.",
+    # Soft mystery + daily life (small, grounded, not supernatural)
+    "Mia found something small in her apartment that she has no memory of buying.",
+    "Mia noticed the same person appearing in the background of several of her recent photos.",
+    "Mia's phone showed a location she doesn't remember visiting last night.",
+    "Mia received a delivery she never ordered and the note inside was addressed to her by name.",
+    "Mia found a photo of herself on a public wall that she never posed for.",
+    "Mia's playlist started playing songs in an order that matched exactly what she was thinking.",
+    "Mia locked her door last night but woke up to find it slightly open.",
+    "Mia found a handwritten note under her pillow with only today's date on it.",
     "Mia received a message from an unknown number with a photo of herself.",
     "Mia discovered her social media was tagged in a location she has never visited.",
-    "Mia woke up to find her front door slightly open even though she locked it.",
-    "Mia found a note slipped under her door with her name on it.",
-    "Mia's phone started showing photos she never took in her camera roll.",
-    "Mia heard a sound coming from inside her closet at 3 AM.",
-    "Mia found a delivery package addressed to her with no sender information.",
-    # Mystery / suspense
-    "Mia explores an abandoned floor in her building that should not exist.",
-    "Mia found an old phone in a thrift store that still receives texts.",
-    "Mia discovered a room behind a bookshelf in her new apartment.",
-    "Mia keeps seeing the same stranger outside her apartment window.",
-    "Mia found a journal in a cafe with entries written in her handwriting.",
-    "Mia's reflection in the mirror moved independently for a split second.",
-    "Mia received a friend request from an account using her exact photos.",
-    "Mia found a key taped under her desk with a note saying do not use.",
-    "Mia's GPS keeps redirecting her to the same unknown address.",
-    "Mia discovered her apartment was previously rented by someone with her exact name.",
-    # Emotional / story-driven
+    # Slightly deeper / emotional story
+    "Mia went back to a place she used to visit often and everything felt different.",
+    "Mia deleted old photos from her phone and stopped at one she couldn't bring herself to erase.",
+    "Mia wrote a long message to someone and then deleted it without sending.",
+    "Mia spent the day pretending everything was fine while feeling the opposite.",
+    "Mia found an old voice note she recorded months ago and barely recognized herself.",
     "Mia revisits her childhood home and finds something she left behind years ago.",
-    "Mia receives a voice message from a number that no longer exists.",
     "Mia found a hidden compartment in her jewelry box containing an old letter.",
-    "Mia's playlist started playing songs she never added in a specific order.",
-    "Mia noticed all the clocks in her apartment are set to different times.",
     "Mia found a polaroid of herself sleeping on her nightstand.",
-    "Mia's smart speaker answered a question she only thought in her head.",
-    "Mia discovered a second WiFi network named after her apartment number.",
-    "Mia found her own handwriting on a wall she painted over last month.",
-    "Mia received a package with items from a day she has no memory of.",
 ]
 
-# Genre distribution for variety
-GENRES = ["daily_vlog", "mystery", "story", "daily_vlog", "mystery", "horror", "reaction"]
+# Genre distribution for variety — weighted toward vlog and soft mystery,
+# with "emotional" folded in. No horror/reaction; keeps tone consistent with
+# a real daily-life vlog rather than a suspense series.
+GENRES = ["daily_vlog", "daily_vlog", "soft_mystery", "emotional", "daily_vlog", "soft_mystery"]
 
 
 class StoryGenerator:
@@ -112,18 +115,22 @@ class StoryGenerator:
         # Build prompt for story planner
         instruction = f"""Create one short-form vertical daily-vlog episode starring Mia, a recurring adult female influencer.
 
+This is a VLOG series, not a horror or suspense series. Even when the theme involves
+something strange, it should still feel like a real girl talking to her camera about
+her day — curious or a little unsettled at most, never scared, never horror-coded.
+
 Theme: {theme}
 Genre: {genre}
 
 Return ONLY valid JSON with this exact shape:
 {{
-  "title": "short episode title",
+  "title": "short curiosity-driven episode title (no horror-movie phrasing)",
   "genre": "{genre}",
-  "tone": "warm natural|cool suspense|dark atmospheric",
+  "tone": "warm natural|soft emotional|light curiosity",
   "outfit": "one concise continuity outfit description",
-  "script": "35-55 second first-person narration spoken by Mia. Natural conversational vlog speech. No awkward fragments.",
-  "opening_hook": "the FIRST 1-2 sentences that immediately establish the mystery/premise",
-  "final_reveal": "the climactic final 2-3 sentences with a payoff",
+  "script": "30-45 second first-person narration spoken by Mia. Natural, conversational vlog speech, like she's talking to her phone. Small natural fillers are fine (right?, I swear, okay so...). No awkward fragments.",
+  "opening_hook": "the FIRST 1-2 sentences that immediately establish curiosity or emotion — not dread",
+  "final_reveal": "the final 2-3 sentences with an emotional realization or open question, not a scare",
   "key_objects": [
     {{"name": "object_id", "type": "photograph|phone|letter|key|book|document|prop", "description": "visual description", "introduced_scene": 1}}
   ],
@@ -150,14 +157,15 @@ Return ONLY valid JSON with this exact shape:
 }}
 
 CRITICAL RULES:
-1. OPENING HOOK: Start with an attention-grabbing first sentence. No boring exposition.
-2. NATURAL SPEECH: Mia sounds like a real person talking to her camera. Casual, conversational.
-3. FINAL REVEAL: Deliver a payoff — unanswered question, disturbing realization, or impossible detail.
-4. CONTINUITY: Same location unless script justifies movement. Objects persist.
-5. Use 4-6 scenes. Each scene a clear narrative beat.
-6. Emotional progression builds logically.
-7. One outfit unless script changes time/day.
-8. Avoid copyrighted characters, brands, on-screen text.
+1. OPENING HOOK: Start with an attention-grabbing first sentence that creates curiosity or emotion — not dread. No boring exposition.
+2. NATURAL SPEECH: Mia sounds like a real 20-something talking casually to her camera. Casual, conversational, first-person.
+3. FINAL REVEAL: Deliver a payoff — an emotional realization or an open question that makes people want the next video. Avoid horror-style scares or "impossible" supernatural details.
+4. STAY GROUNDED: If the theme involves something odd, keep it small and real-world (a note, a message, a playlist, a delivery) — not supernatural escalation (secret rooms, doppelgangers, objects moving on their own).
+5. CONTINUITY: Same location unless script justifies movement. Objects persist.
+6. Use 4-6 scenes. Each scene a clear narrative beat.
+7. Emotional progression builds logically and stays within "curious / uneasy / reflective" — not "terrified."
+8. One outfit unless script changes time/day.
+9. Avoid copyrighted characters, brands, on-screen text.
 """
         raw = self.agnes.chat(
             instruction,

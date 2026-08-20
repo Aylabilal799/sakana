@@ -30,6 +30,7 @@ STAGE_WEIGHTS = {
     "FINAL_QA": (90, "🔍 Final quality check"),
     "SEO_GENERATING": (94, "📝 Creating SEO metadata"),
     "YOUTUBE_UPLOADING": (97, "📺 Uploading to YouTube"),
+    "TIKTOK_UPLOADING": (98, "📱 Uploading to TikTok"),
     "COMPLETED": (100, "✅ Complete"),
     "FAILED": (0, "❌ Failed"),
 }
@@ -358,6 +359,22 @@ class JobQueue:
                     )
                 elif yt_result.get("error"):
                     embed.add_field(name="⚠️ YouTube Upload Error", value=f"```{yt_result['error'][:500]}```", inline=False)
+
+            # ===== TIKTOK EMBED BLOCK =====
+            tiktok = metadata.get("tiktok", {})
+            if tiktok.get("url"):
+                embed.add_field(
+                    name="📱 TikTok",
+                    value=f"[View on TikTok]({tiktok['url']})",
+                    inline=False,
+                )
+            elif tiktok.get("error"):
+                embed.add_field(
+                    name="⚠️ TikTok Upload Error",
+                    value=f"```{tiktok['error'][:500]}```",
+                    inline=False,
+                )
+            # ===== END TIKTOK EMBED BLOCK =====
 
             if msg:
                 await msg.edit(embed=embed)
