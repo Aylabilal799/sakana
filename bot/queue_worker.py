@@ -16,11 +16,11 @@ DB = os.getenv("JOB_DATABASE", "/root/sakana/jobs/queue.db")
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED"}
 
 STAGE_WEIGHTS = {
-    "STORY_GENERATING": (5, "🧠 Writing Mia's story"),
+    "STORY_GENERATING": (5, "🧠 Writing story"),
     "OBJECT_REGISTRATION": (12, "📦 Tracking story objects"),
     "SOUND_DESIGN": (15, "🎵 Planning sound design"),
-    "IDENTITY_READY": (18, " Mia identity ready"),
-    "REFERENCE_GENERATING": (18, "👩 Creating Mia identity"),
+    "IDENTITY_READY": (18, "Identity ready"),
+    "REFERENCE_GENERATING": (18, "👩 Creating character identity"),
     "TTS_GENERATING": (25, "🎙 Generating narration"),
     "SCENE_KEYFRAME_GENERATING": (30, "🎬 Generating scenes"),
     "SCENE_VIDEO_GENERATING": (55, "🎥 Animating scenes"),
@@ -89,20 +89,21 @@ class JobQueue:
                 metadata_json TEXT,
                 youtube_scheduled_time TEXT,
                 youtube_video_id TEXT,
-                youtube_uploaded INTEGER DEFAULT 0
+                youtube_uploaded INTEGER DEFAULT 0,
+                channel TEXT DEFAULT 'mia'
             )""")
             existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
             additions = {
                 "discord_username": "TEXT", "prompt": "TEXT", "stage": "TEXT",
                 "status_message": "TEXT", "output_path": "TEXT", "seo_url": "TEXT",
                 "youtube_scheduled_time": "TEXT", "youtube_video_id": "TEXT",
-                "youtube_uploaded": "INTEGER DEFAULT 0",
+                "youtube_uploaded": "INTEGER DEFAULT 0", "channel": "TEXT DEFAULT 'mia'",
             }
             for column, sql_type in additions.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {sql_type}")
             conn.execute("""UPDATE jobs SET status='FAILED', error_message=COALESCE(error_message,
-                'Interrupted by bot restart; submit /mia again.'), completed_at=CURRENT_TIMESTAMP
+                'Interrupted by bot restart; submit again.'), completed_at=CURRENT_TIMESTAMP
                 WHERE status NOT IN ('PENDING','COMPLETED','FAILED','CANCELLED')""")
             conn.commit()
 
@@ -110,8 +111,8 @@ class JobQueue:
         job_id = uuid.uuid4().hex[:8]
         with self._connect() as conn:
             conn.execute("""INSERT INTO jobs
-                (job_id, discord_user_id, discord_username, discord_channel_id, prompt, script, genre, status, stage)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'QUEUED')""",
+                (job_id, discord_user_id, discord_username, discord_channel_id, prompt, script, genre, status, stage, channel)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'QUEUED', 'mia')""",
                 (job_id, str(user_id), str(username), str(channel_id), prompt, prompt, genre))
             conn.commit()
         return job_id
@@ -122,8 +123,20 @@ class JobQueue:
         with self._connect() as conn:
             conn.execute("""INSERT INTO jobs
                 (job_id, discord_user_id, discord_username, discord_channel_id, prompt, script, genre, status, stage,
-                 youtube_scheduled_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'QUEUED', ?)""",
+                 youtube_scheduled_time, channel)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'QUEUED', ?, 'mia')""",
+                (job_id, str(user_id), str(username), str(channel_id), prompt, prompt, genre, scheduled_iso))
+            conn.commit()
+        return job_id
+
+    async def add_confess_job(self, user_id, username, channel_id, prompt, genre="auto", scheduled_time=None) -> str:
+        job_id = uuid.uuid4().hex[:8]
+        scheduled_iso = scheduled_time.isoformat() if scheduled_time else None
+        with self._connect() as conn:
+            conn.execute("""INSERT INTO jobs
+                (job_id, discord_user_id, discord_username, discord_channel_id, prompt, script, genre, status, stage,
+                 youtube_scheduled_time, channel)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'QUEUED', ?, 'confession')""",
                 (job_id, str(user_id), str(username), str(channel_id), prompt, prompt, genre, scheduled_iso))
             conn.commit()
         return job_id
@@ -212,14 +225,16 @@ class JobQueue:
         channel_id = int(job["discord_channel_id"])
         prompt = job.get("prompt") or job.get("script") or ""
         scheduled_time = job.get("youtube_scheduled_time")
+        job_channel = job.get("channel", "mia")
 
-        await self._create_progress_message(channel_id, job_id, prompt)
+        await self._create_progress_message(channel_id, job_id, prompt, job_channel)
 
         cmd = [
             sys.executable, "-m", "generator.worker_process",
             "--job-id", job_id,
             "--prompt", prompt,
             "--genre", job.get("genre") or "auto",
+            "--channel", job_channel,
         ]
         if scheduled_time:
             cmd.extend(["--scheduled-time", scheduled_time])
@@ -241,14 +256,6 @@ class JobQueue:
                 wf.write(stderr.decode("utf-8", errors="replace")[-4000:] + "\n")
         except Exception:
             pass
-        # Log worker output for debugging
-        try:
-            with open("/root/sakana/logs/worker.log", "a") as wf:
-                wf.write(f"\n=== Worker {job_id} ===\n")
-                wf.write(f"STDOUT:\n{stdout.decode()[-3000:]}\n")
-                wf.write(f"STDERR:\n{stderr.decode()[-3000:]}\n")
-        except Exception:
-            pass
         poll_task.cancel()
 
         try:
@@ -268,7 +275,7 @@ class JobQueue:
                     (error_msg, job_id)
                 )
                 conn.commit()
-            await self._notify_error(job_id, stage, error_msg)
+            await self._notify_error(job_id, stage, error_msg, job_channel)
             return
 
         status = await self.get_status(job_id) or {}
@@ -288,18 +295,19 @@ class JobQueue:
                 "scheduled_time": status.get("youtube_scheduled_time"),
             }
 
-        await self._send_done(job_id, metadata, yt_result)
+        await self._send_done(job_id, metadata, yt_result, job_channel)
 
-    async def _create_progress_message(self, channel_id, job_id, prompt):
+    async def _create_progress_message(self, channel_id, job_id, prompt, job_channel="mia"):
         try:
             channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
             if not channel:
                 return
             info = _stage_info("STORY_GENERATING", 0, "Starting...")
+            title = "🎬 Confession Video Generation" if job_channel == "confession" else "🎬 Mia AI Video Generation"
             embed = discord.Embed(
-                title="🎬 Mia AI Video Generation",
-                description=f"Job: `{job_id}`",
-                color=discord.Color.blurple(),
+                title=title,
+                description=f"Job: `{job_id}` | Channel: `{job_channel}`",
+                color=discord.Color.purple() if job_channel == "confession" else discord.Color.blurple(),
             )
             embed.add_field(name="Prompt", value=prompt[:300] + "..." if len(prompt) > 300 else prompt, inline=False)
             embed.add_field(name="Progress", value=f"`{info['bar']}` {info['progress']}%", inline=False)
@@ -316,10 +324,14 @@ class JobQueue:
             return
         try:
             info = _stage_info(stage, progress, message)
+            # Fetch channel to set correct title
+            status = await self.get_status(job_id) or {}
+            job_channel = status.get("channel", "mia")
+            title = "🎬 Confession Video Generation" if job_channel == "confession" else "🎬 Mia AI Video Generation"
             embed = discord.Embed(
-                title="🎬 Mia AI Video Generation",
-                description=f"Job: `{job_id}`",
-                color=discord.Color.blurple(),
+                title=title,
+                description=f"Job: `{job_id}` | Channel: `{job_channel}`",
+                color=discord.Color.purple() if job_channel == "confession" else discord.Color.blurple(),
             )
             embed.add_field(name="Progress", value=f"`{info['bar']}` {info['progress']}%", inline=False)
             embed.add_field(name="Stage", value=info['label'], inline=True)
@@ -328,17 +340,21 @@ class JobQueue:
         except Exception as exc:
             logger.error("Failed to update progress message for %s: %s", job_id, exc)
 
-    async def _send_done(self, job_id, metadata, yt_result=None):
+    async def _send_done(self, job_id, metadata, yt_result=None, job_channel="mia"):
         msg = self._progress_messages.pop(job_id, None)
         video = metadata.get("video", {})
         seo = metadata.get("seo_file", {})
         youtube = metadata.get("youtube", {})
 
         try:
+            is_confession = job_channel == "confession"
+            title = "✅ Confession video completed" if is_confession else "✅ Mia video completed"
+            color = discord.Color.purple() if is_confession else discord.Color.green()
+
             embed = discord.Embed(
-                title="✅ Mia video completed",
-                description=f"Job: `{job_id}`\n`{_make_bar(100)}` 100%",
-                color=discord.Color.green(),
+                title=title,
+                description=f"Job: `{job_id}` | Channel: `{job_channel}`\n`{_make_bar(100)}` 100%",
+                color=color,
             )
             embed.add_field(name="🎬 Video", value=video.get("url", "Unavailable"), inline=False)
             embed.add_field(name="⏱ Duration", value=f"{video.get('duration', 0):.2f} seconds", inline=True)
@@ -360,41 +376,43 @@ class JobQueue:
                 elif yt_result.get("error"):
                     embed.add_field(name="⚠️ YouTube Upload Error", value=f"```{yt_result['error'][:500]}```", inline=False)
 
-            # ===== TIKTOK EMBED BLOCK =====
-            tiktok = metadata.get("tiktok", {})
-            if tiktok.get("url"):
-                embed.add_field(
-                    name="📱 TikTok",
-                    value=f"[View on TikTok]({tiktok['url']})",
-                    inline=False,
-                )
-            elif tiktok.get("error"):
-                embed.add_field(
-                    name="⚠️ TikTok Upload Error",
-                    value=f"```{tiktok['error'][:500]}```",
-                    inline=False,
-                )
-            # ===== END TIKTOK EMBED BLOCK =====
+            # TikTok only for Mia channel
+            if not is_confession:
+                tiktok = metadata.get("tiktok", {})
+                if tiktok.get("url"):
+                    embed.add_field(
+                        name="📱 TikTok",
+                        value=f"[View on TikTok]({tiktok['url']})",
+                        inline=False,
+                    )
+                elif tiktok.get("error"):
+                    embed.add_field(
+                        name="⚠️ TikTok Upload Error",
+                        value=f"```{tiktok['error'][:500]}```",
+                        inline=False,
+                    )
 
             if msg:
                 await msg.edit(embed=embed)
             else:
-                channel_id = int(metadata.get("discord_channel_id", 0))
-                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-                if channel:
-                    msg = await channel.send(embed=embed)
+                status_info = await self.get_status(job_id)
+                if status_info:
+                    channel_id = int(status_info.get("discord_channel_id", 0))
+                    channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                    if channel:
+                        msg = await channel.send(embed=embed)
 
             if msg:
                 seo_path = seo.get("path")
                 if seo_path and Path(seo_path).is_file():
-                    await msg.reply(file=discord.File(seo_path, filename="mia_youtube.txt"))
+                    await msg.reply(file=discord.File(seo_path, filename="youtube_seo.txt"))
 
                 video_path = video.get("path")
                 if video_path and Path(video_path).is_file():
                     size = Path(video_path).stat().st_size
                     if size <= 9 * 1024 * 1024:
                         try:
-                            await msg.reply(file=discord.File(video_path, filename="mia_video.mp4"))
+                            await msg.reply(file=discord.File(video_path, filename="video.mp4"))
                         except discord.HTTPException as exc:
                             logger.warning("Discord video upload skipped for %s: %s", job_id, exc)
                     else:
@@ -402,14 +420,17 @@ class JobQueue:
         except Exception as exc:
             logger.exception("Completion notification failed for %s: %s", job_id, exc)
 
-    async def _notify_error(self, job_id, stage, error):
+    async def _notify_error(self, job_id, stage, error, job_channel="mia"):
         msg = self._progress_messages.pop(job_id, None)
         try:
+            is_confession = job_channel == "confession"
+            title = "❌ Confession generation failed" if is_confession else "❌ Mia generation failed"
+            color = discord.Color.red()
             info = _stage_info(stage, 0, error)
             embed = discord.Embed(
-                title="❌ Mia generation failed",
-                description=f"Job: `{job_id}`\n`{info['bar']}` {info['progress']}%",
-                color=discord.Color.red(),
+                title=title,
+                description=f"Job: `{job_id}` | Channel: `{job_channel}`\n`{info['bar']}` {info['progress']}%",
+                color=color,
             )
             embed.add_field(name="Stage", value=info['label'], inline=False)
             embed.add_field(name="Error", value=f"```{error[:900]}```", inline=False)

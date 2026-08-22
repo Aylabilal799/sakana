@@ -26,7 +26,7 @@ def setup(bot):
 
     @bot.slash_command(name="miayt", description="Generate and schedule a Mia video for YouTube")
     async def miayt(ctx, date: str, time: str, script: str):
-        await ctx.respond("📅 Parsing schedule and queuing...")
+        await ctx.respond("📅 Parsing schedule and queuing Mia...")
         try:
             scheduled = bot.job_queue.parse_scheduled_time(date, time)
             if not scheduled:
@@ -43,7 +43,7 @@ def setup(bot):
                 scheduled_time=scheduled
             )
             await ctx.followup.send(
-                f"✅ YouTube job queued: `{job_id}`\n"
+                f"✅ Mia YouTube job queued: `{job_id}`\n"
                 f"Scheduled for: `{scheduled.isoformat()}`\n"
                 f"Check status with `/miastatus {job_id}`"
             )
@@ -52,7 +52,35 @@ def setup(bot):
             logger.exception("Failed to queue /miayt job")
             await ctx.followup.send(f"❌ Failed to queue job: {str(e)[:500]}")
 
-    @bot.slash_command(name="miastatus", description="Check Mia video job status")
+    @bot.slash_command(name="confessyt", description="Generate and schedule a Confession video for YouTube")
+    async def confessyt(ctx, date: str, time: str, script: str):
+        await ctx.respond("📅 Parsing schedule and queuing Confession...")
+        try:
+            scheduled = bot.job_queue.parse_scheduled_time(date, time)
+            if not scheduled:
+                await ctx.followup.send(
+                    "❌ Invalid date/time format. Use `YYYY-MM-DD` and `HH:MM` (24h) or `HH:MM AM/PM`"
+                )
+                return
+            job_id = await bot.job_queue.add_confess_job(
+                user_id=ctx.author.id,
+                username=str(ctx.author),
+                channel_id=ctx.channel.id,
+                prompt=script,
+                genre="auto",
+                scheduled_time=scheduled
+            )
+            await ctx.followup.send(
+                f"✅ Confession YouTube job queued: `{job_id}`\n"
+                f"Scheduled for: `{scheduled.isoformat()}`\n"
+                f"Check status with `/miastatus {job_id}`"
+            )
+            await bot.job_queue.process_next()
+        except Exception as e:
+            logger.exception("Failed to queue /confessyt job")
+            await ctx.followup.send(f"❌ Failed to queue job: {str(e)[:500]}")
+
+    @bot.slash_command(name="miastatus", description="Check video job status")
     async def miastatus(ctx, job_id: str):
         await ctx.respond("🔍 Checking status...")
         try:
@@ -64,14 +92,16 @@ def setup(bot):
             status_str = status.get("status", "UNKNOWN")
             stage = status.get("stage", "N/A")
             progress = status.get("progress", 0)
+            channel = status.get("channel", "mia")
 
             color = discord.Color.blurple()
             if status_str == "COMPLETED":
-                color = discord.Color.green()
+                color = discord.Color.purple() if channel == "confession" else discord.Color.green()
             elif status_str == "FAILED":
                 color = discord.Color.red()
 
             embed = discord.Embed(title=f"Job `{job_id}`", color=color)
+            embed.add_field(name="Channel", value=channel.capitalize(), inline=True)
             embed.add_field(name="Status", value=status_str, inline=True)
             embed.add_field(name="Stage", value=stage, inline=True)
             embed.add_field(name="Progress", value=f"{progress}%", inline=True)
@@ -96,4 +126,4 @@ def setup(bot):
             logger.exception("Failed to get /miastatus")
             await ctx.followup.send(f"❌ Error: {str(e)[:500]}")
 
-    logger.info("Registered commands: /mia, /miayt, /miastatus")
+    logger.info("Registered commands: /mia, /miayt, /confessyt, /miastatus")

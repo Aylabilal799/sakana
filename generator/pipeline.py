@@ -1,7 +1,9 @@
 import json
 import logging
+import re
 import os
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
@@ -12,8 +14,9 @@ from generator.caption_engine import CaptionEngine
 from generator.character_manager import CharacterManager
 from generator.object_manager import ObjectManager
 from generator.seo_generator import SEOGenerator
+from generator.confession_seo import ConfessionSEOGenerator
 from generator.sound_design import SoundDesigner
-from generator.story_planner import StoryPlanner
+from generator.story_planner import StoryPlanner, ConfessionStoryPlanner
 from generator.tts_engine import TTSEngine
 from generator.video_assembler import VideoAssembler
 from generator.visual_qa import VisualQA
@@ -22,9 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 class VideoPipeline:
-    def __init__(self, job_id: str, status_callback=None):
+    def __init__(self, job_id: str, status_callback=None, channel: str = "mia"):
         self.job_id = job_id
         self.status_callback = status_callback
+        self.channel = channel
+        self.is_confession = channel == "confession"
+
         self.project_dir = Path(os.getenv("PROJECT_DIRECTORY", "/root/sakana"))
         self.host_root = Path(os.getenv("OUTPUT_DIRECTORY", "/var/www/agnes-videos"))
         self.public_base = os.getenv("VIDEO_HOST_URL", "http://localhost:6464/videos").rstrip("/")
@@ -42,17 +48,28 @@ class VideoPipeline:
             directory.mkdir(parents=True, exist_ok=True)
 
         self.agnes = AgnesClient()
-        self.story = StoryPlanner(self.agnes)
+        
+        # Choose planner based on channel
+        if self.is_confession:
+            self.story = ConfessionStoryPlanner(self.agnes)
+        else:
+            self.story = StoryPlanner(self.agnes)
+            
         self.character = CharacterManager()
         self.object_manager = ObjectManager(self.job_dir, self.agnes)
-        self.tts = TTSEngine(default_voice=self.character.config.get("voice", "af_bella"))
+        
+        # For confession, default voice is unused — we use per-character voices
+        default_voice = self.character.config.get("voice", "af_bella") if not self.is_confession else "af_nicole"
+        self.tts = TTSEngine(default_voice=default_voice)
+        
         self.captions = CaptionEngine()
         self.assembler = VideoAssembler()
-        self.seo = SEOGenerator()
+        self.seo = ConfessionSEOGenerator() if self.is_confession else SEOGenerator()
         self.visual_qa = VisualQA(self.character)
         self.sound_designer = SoundDesigner(self.job_dir)
         self.metadata = {
             "job_id": job_id,
+            "channel": channel,
             "status": "PENDING",
             "created_at": self._now(),
             "steps": [],
@@ -61,8 +78,12 @@ class VideoPipeline:
     def run(self, user_prompt: str, genre: str = "auto") -> Dict:
         try:
             # Phase 1: Story Generation
-            self._update_status("STORY_GENERATING", 5, "🧠 Writing Mia's story with continuity tracking...")
-            plan = self.story.plan(user_prompt)
+            label = "confession story" if self.is_confession else "Mia's story"
+            self._update_status("STORY_GENERATING", 5, f"🧠 Writing {label} with continuity tracking...")
+            if self.is_confession and self._is_monologue(user_prompt):
+                plan = self._create_monologue_plan(user_prompt)
+            else:
+                plan = self.story.plan(user_prompt)
             if genre and genre not in ("auto", "story"):
                 plan["genre"] = genre
             self.metadata.update({"prompt": user_prompt, "plan": plan, "script": plan["script"]})
@@ -70,22 +91,32 @@ class VideoPipeline:
             self._write_text(self.job_dir / "script.txt", plan["script"])
             self._write_json(self.job_dir / "story_plan.json", plan)
 
-            # Phase 2: TTS
-            self._update_status("TTS_GENERATING", 14, "🎙 Generating Mia's Kokoro voice...")
-            narration_path, audio_duration = self.tts.generate(
-                plan["script"], str(self.audio_dir / "mia_narration.wav"),
-                voice=self.character.config.get("voice", "af_bella"),
-            )
+            # Phase 2: TTS (channel-specific)
+            if self.is_confession:
+                narration_path, audio_duration = self._generate_confession_audio(plan)
+            else:
+                self._update_status("TTS_GENERATING", 14, "🎙 Generating Mia's Kokoro voice...")
+                narration_path, audio_duration = self.tts.generate(
+                    plan["script"], str(self.audio_dir / "mia_narration.wav"),
+                    voice=self.character.config.get("voice", "af_bella"),
+                )
+            
+            voice_label = "multi-character" if self.is_confession else self.character.config.get("voice", "af_bella")
             self.metadata["audio"] = {
                 "path": narration_path,
                 "duration": audio_duration,
-                "voice": self.character.config.get("voice", "af_bella"),
+                "voice": voice_label,
             }
 
-            # Phase 3: Character Identity Reference
-            self._ensure_reference_image()
-            reference_url = self.character.publish_reference()
-            self.metadata["character"] = self.character.get_summary()
+            # Phase 3: Character Identity Reference (Mia only)
+            if self.is_confession:
+                self._update_status("IDENTITY_READY", 18, "👥 Confession mode — skipping single-character reference")
+                reference_url = None
+                self.metadata["character"] = {"mode": "confession", "characters": plan.get("characters", [])}
+            else:
+                self._ensure_reference_image()
+                reference_url = self.character.publish_reference()
+                self.metadata["character"] = self.character.get_summary()
 
             # Phase 4: Register Persistent Objects
             self._update_status("OBJECT_REGISTRATION", 18, "📦 Registering persistent story objects...")
@@ -104,7 +135,7 @@ class VideoPipeline:
             self._update_status("AUDIO_MIXING", 72, "🔊 Mixing narration with sound design...")
             mixed_audio_path = self.sound_designer.mix_final_audio(
                 narration_path, scene_durations,
-                str(self.audio_dir / "mia_mixed.wav")
+                str(self.audio_dir / "mixed_final.wav")
             )
             mixed_duration = self._probe_duration(mixed_audio_path)
             self.metadata["mixed_audio"] = {"path": mixed_audio_path, "duration": mixed_duration}
@@ -112,7 +143,7 @@ class VideoPipeline:
             # Phase 8: Captions
             self._update_status("CAPTION_GENERATING", 78, "💬 Creating professional captions...")
             ass_path = self.captions.generate_from_script(
-                plan["script"], mixed_duration, str(self.caption_dir / "mia_captions.ass")
+                plan["script"], mixed_duration, str(self.caption_dir / "captions.ass")
             )
 
             # Phase 9: Video Assembly
@@ -125,7 +156,9 @@ class VideoPipeline:
                 scene_durations=scene_durations,
                 tone=plan.get("tone", "warm natural"),
             )
-            final_path = str(self.host_dir / "mia_video.mp4")
+            
+            final_filename = "confession_video.mp4" if self.is_confession else "mia_video.mp4"
+            final_path = str(self.host_dir / final_filename)
             shutil.copy2(job_final_path, final_path)
             final_duration = self.assembler.probe_duration(final_path)
 
@@ -137,14 +170,31 @@ class VideoPipeline:
             # Phase 11: SEO
             self._update_status("SEO_GENERATING", 94, "📝 Creating YouTube metadata...")
             youtube = self.seo.generate(plan)
-            job_seo_path = self.seo.write_text_file(youtube, str(self.job_dir / "mia_youtube.txt"))
-            seo_path = str(self.host_dir / "mia_youtube.txt")
+
+            # Confession channel: separate SEO metadata from Mia
+            if self.is_confession:
+                confession_title = plan.get("title", "Confession Story")[:100]
+                youtube["title"] = confession_title
+                # Strip any Mia/vlog terms, build confession description
+                old_desc = youtube.get("description", "")
+                if "Mia" in old_desc or "vlog" in old_desc.lower():
+                    old_desc = "A real confession story.\n\n" + plan.get("script", "")[:400]
+                youtube["description"] = old_desc[:5000]
+                confession_tags = ["confession", "reddit story", "real story", "relationship", "drama", "storytime", "cheating", "secrets", "betrayal"]
+                existing = [t for t in youtube.get("tags", []) if t.lower() not in ["mia", "daily vlog", "vlogger", "influencer"]]
+                youtube["tags"] = list(dict.fromkeys(confession_tags + existing))[:15]
+                logger.info("Confession SEO generated: title='%s' tags=%s", confession_title, youtube["tags"])
+            seo_filename = "confession_youtube.txt" if self.is_confession else "mia_youtube.txt"
+            job_seo_path = self.seo.write_text_file(youtube, str(self.job_dir / seo_filename))
+            seo_path = str(self.host_dir / seo_filename)
             shutil.copy2(job_seo_path, seo_path)
 
             # Publish and cleanup
             self._publish_supporting_files(plan, ass_path)
-            video_url = self._public_url("mia_video.mp4")
-            seo_url = self._public_url("mia_youtube.txt")
+            video_url = self._public_url(final_filename)
+            seo_url = self._public_url(seo_filename)
+            
+            done_label = "Confession video completed" if self.is_confession else "Mia video completed"
             self.metadata.update({
                 "status": "COMPLETED",
                 "completed_at": self._now(),
@@ -162,17 +212,86 @@ class VideoPipeline:
             })
             shutil.rmtree(self.work_dir, ignore_errors=True)
             shutil.rmtree(self.job_dir / ".assembly", ignore_errors=True)
-            self._update_status("COMPLETED", 100, "✅ Mia video completed")
+            self._update_status("COMPLETED", 100, f"✅ {done_label}")
             self._write_json(self.host_dir / "metadata.json", self.metadata)
             self._fix_host_permissions()
             return self.metadata
         except Exception as exc:
-            logger.exception("Mia pipeline failed: %s", self.job_id)
+            logger.exception("Pipeline failed: %s", self.job_id)
             self.metadata["status"] = "FAILED"
             self.metadata["error"] = str(exc)
             self.metadata["failed_at"] = self._now()
             self._write_json(self.job_dir / "metadata.json", self.metadata)
             raise
+
+    def _generate_confession_audio(self, plan: Dict) -> tuple:
+        """Generate multi-character dialogue audio by concatenating per-character TTS segments."""
+        characters = {c["name"].upper(): c for c in plan.get("characters", [])}
+        script = plan["script"]
+
+        # Parse dialogue lines: CHARACTERNAME: dialogue text
+        lines = []
+        for line in script.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                speaker, text = line.split(":", 1)
+                speaker = speaker.strip().upper()
+                text = text.strip()
+                if speaker and text:
+                    lines.append((speaker, text))
+
+        if not lines:
+            # Monologue: single-character narration using assigned voice
+            voice = plan.get("characters", [{}])[0].get("voice", "af_nicole") if plan.get("characters") else "af_nicole"
+            logger.info("Monologue mode — single voice: %s", voice)
+            output_path = str(self.audio_dir / "confession_narration.wav")
+            return self.tts.generate(script, output_path, voice=voice)
+
+        self._update_status("TTS_GENERATING", 14, f"🎙 Generating {len(lines)} dialogue lines for {len(characters)} characters...")
+
+        # Generate audio for each dialogue line
+        segment_files = []
+        total_duration = 0
+
+        for i, (speaker, text) in enumerate(lines):
+            char_config = characters.get(speaker, {})
+            voice = char_config.get("voice", "af_nicole")
+            speaker_name = char_config.get("name", speaker).title()
+            
+            seg_path = str(self.audio_dir / f"dialogue_{i:03d}_{speaker}.wav")
+            path, duration = self.tts.generate(text, seg_path, voice=voice)
+            segment_files.append(path)
+            total_duration += duration
+            logger.info("Generated line %d/%d: %s (voice=%s, dur=%.2fs)", i+1, len(lines), speaker_name, voice, duration)
+
+        # Concatenate all segments with ffmpeg
+        concat_list = str(self.audio_dir / "concat_list.txt")
+        with open(concat_list, "w", encoding="utf-8") as f:
+            for path in segment_files:
+                # Escape single quotes in path for ffmpeg
+                f.write(f"file '{path}'\n")
+
+        output_path = str(self.audio_dir / "confession_narration.wav")
+        
+        logger.info("Concatenating %d audio segments with ffmpeg...", len(segment_files))
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                    "-i", concat_list, "-ar", "24000", "-ac", "1",
+                    output_path
+                ],
+                check=True, capture_output=True, text=True,
+            )
+            logger.info("Audio concatenation successful: %s", output_path)
+        except subprocess.CalledProcessError as e:
+            logger.error("ffmpeg concat failed: %s\nstderr: %s", e, e.stderr)
+            # Fallback: copy the first segment
+            shutil.copy2(segment_files[0], output_path)
+
+        return output_path, total_duration
 
     def _ensure_reference_image(self) -> None:
         if self.character.has_reference_image():
@@ -200,7 +319,7 @@ class VideoPipeline:
                 except Exception as exc:
                     logger.warning("Failed to register object %s: %s", obj.get("name"), exc)
 
-    def _generate_scenes(self, plan: Dict, durations: List[float], reference_url: str) -> List[str]:
+    def _generate_scenes(self, plan: Dict, durations: List[float], reference_url: str = None) -> List[str]:
         scenes = plan["scenes"]
         outputs: List[str] = []
         generated_metadata = []
@@ -215,7 +334,7 @@ class VideoPipeline:
                 "objects_visible": scene.get("objects_visible", []),
                 "objects_held": scene.get("objects_held", []),
                 "emotional_state": scene.get("emotional_state", "curious"),
-                "shot_type": scene.get("shot_type", "handheld medium vlog shot"),
+                "shot_type": scene.get("shot_type", "handheld medium shot"),
                 "camera_motion": scene.get("camera_motion", "subtle handheld push-in"),
                 "lighting": scene.get("lighting", "natural warm realistic light"),
                 "expression": scene.get("expression", "natural and emotionally appropriate"),
@@ -227,11 +346,15 @@ class VideoPipeline:
 
             self._update_status(
                 "SCENE_KEYFRAME_GENERATING", base,
-                f"🎬 Generating Mia scene {index}/{len(scenes)} identity keyframe...",
+                f"🎬 Generating scene {index}/{len(scenes)} identity keyframe...",
             )
 
-            # Generate keyframe with text-only identity (Agnes image API doesn't support img2img)
-            keyframe_prompt = self.character.scene_keyframe_prompt(scene, scene_state)
+            # Generate keyframe — confession uses text-only prompts, Mia uses character reference
+            if self.is_confession:
+                keyframe_prompt = self._confession_scene_keyframe_prompt(scene, plan, scene_state)
+            else:
+                keyframe_prompt = self.character.scene_keyframe_prompt(scene, scene_state)
+                
             if object_prompt:
                 keyframe_prompt = keyframe_prompt.replace(
                     "Vertical 9:16 composition",
@@ -253,19 +376,24 @@ class VideoPipeline:
 
             self._update_status(
                 "SCENE_VIDEO_GENERATING", min(68, base + 4),
-                f"🎥 Animating Mia scene {index}/{len(scenes)}...",
+                f"🎥 Animating scene {index}/{len(scenes)}...",
             )
 
             # Generate video using the keyframe
+            if self.is_confession:
+                motion_prompt = self._confession_video_motion_prompt(scene, scene_state)
+            else:
+                motion_prompt = self.character.video_motion_prompt(scene, scene_state)
+                
             result = self.agnes.generate_video(
-                prompt=self.character.video_motion_prompt(scene, scene_state),
+                prompt=motion_prompt,
                 image_url=keyframe_url,
-                mode=self.character.config.get("video_mode", "ti2vid"),
+                mode=self.character.config.get("video_mode", "ti2vid") if not self.is_confession else "ti2vid",
                 width=720,
                 height=1280,
                 num_frames=self.agnes.frames_for_duration(duration),
                 frame_rate=24,
-                negative_prompt=self.character.get_negative_prompt(),
+                negative_prompt=self.character.get_negative_prompt() if not self.is_confession else "",
             )
             video_id = result.get("video_id") or result.get("task_id") or result.get("id")
             if not video_id:
@@ -276,7 +404,7 @@ class VideoPipeline:
                 timeout=1800,
                 progress_callback=lambda waited, i=index, total=len(scenes), p=base: self._update_status(
                     "SCENE_VIDEO_GENERATING", min(68, p + 4),
-                    f"⏳ Waiting for Mia scene {i}/{total} ({waited}s)...",
+                    f"⏳ Waiting for scene {i}/{total} ({waited}s)...",
                 ),
             )
             video_url = (completed.get("metadata") or {}).get("url") or completed.get("url")
@@ -308,9 +436,52 @@ class VideoPipeline:
         self.metadata["visual_qa_failures"] = self.visual_qa.get_failure_report()
         return outputs
 
+    def _confession_scene_keyframe_prompt(self, scene: Dict, plan: Dict, scene_state: Dict) -> str:
+        """Build a cinematic keyframe prompt for confession multi-character scenes."""
+        characters = plan.get("characters", [])
+        char_descs = []
+        for c in characters:
+            char_descs.append(
+                f"{c['name']} ({c.get('gender', 'person')} in {c.get('age', 'their 20s')}, "
+                f"{c.get('role', 'character')})"
+            )
+        
+        char_text = ", ".join(char_descs)
+        desc = scene.get("description", "")
+        visual = scene.get("visual_prompt", desc)
+        mood = scene.get("mood", "tense")
+        lighting = scene_state.get("lighting", "natural warm realistic light")
+        location = scene_state.get("location", "indoor location")
+
+        return (
+            f"Cinematic 9:16 vertical composition. {visual}. "
+            f"Characters: {char_text}. "
+            f"Location: {location}. "
+            f"Atmosphere: {mood}, emotionally charged, photorealistic. "
+            f"Lighting: {lighting}. "
+            f"Movie quality, sharp focus, natural skin textures, detailed environment. "
+            f"Shot on professional cinema camera, shallow depth of field."
+        )
+
+    def _confession_video_motion_prompt(self, scene: Dict, scene_state: Dict) -> str:
+        """Build a video motion prompt for confession scenes."""
+        desc = scene.get("description", "")
+        visual = scene.get("visual_prompt", desc)
+        action = scene_state.get("story_event", "characters interacting")
+        camera = scene_state.get("camera_motion", "subtle handheld movement")
+        
+        return (
+            f"Cinematic scene: {visual}. "
+            f"Characters naturally moving, gesturing, and reacting to each other. "
+            f"Action: {action}. "
+            f"Camera: {camera}, smooth professional motion. "
+            f"Photorealistic, natural lighting, emotional acting, movie quality. "
+            f"Characters maintain consistent appearance throughout the shot."
+        )
+
     @staticmethod
     def _scene_durations(scenes: List[Dict], audio_duration: float) -> List[float]:
-        weights = [max(1, len(str(scene.get("narration", "")).split())) for scene in scenes]
+        weights = [max(1, len(str(scene.get("narration", scene.get("dialogue_segment", ""))).split())) for scene in scenes]
         total = sum(weights) or len(scenes)
         raw = [audio_duration * weight / total for weight in weights]
         return raw
@@ -371,7 +542,6 @@ class VideoPipeline:
 
     @staticmethod
     def _probe_duration(path: str) -> float:
-        import subprocess
         result = subprocess.run([
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", path,
@@ -379,10 +549,11 @@ class VideoPipeline:
         return float(result.stdout.strip())
 
     def _publish_supporting_files(self, plan: Dict, ass_path: str) -> None:
-        shutil.copy2(self.job_dir / "script.txt", self.host_dir / "mia_script.txt")
+        script_filename = "confession_script.txt" if self.is_confession else "mia_script.txt"
+        shutil.copy2(self.job_dir / "script.txt", self.host_dir / script_filename)
         shutil.copy2(self.job_dir / "story_plan.json", self.host_dir / "story_plan.json")
-        shutil.copy2(ass_path, self.host_dir / "mia_captions.ass")
-        # Also publish sound design plan
+        ass_filename = "confession_captions.ass" if self.is_confession else "mia_captions.ass"
+        shutil.copy2(ass_path, self.host_dir / ass_filename)
         sound_plan_path = self.audio_dir / "sound_design.json"
         if sound_plan_path.exists():
             shutil.copy2(sound_plan_path, self.host_dir / "sound_design.json")

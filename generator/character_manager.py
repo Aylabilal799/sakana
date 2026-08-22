@@ -1,10 +1,10 @@
+from urllib.parse import quote
 import json
 import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, Optional
-from urllib.parse import quote
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,31 @@ DEFAULT_MIA_CONFIG = {
     "reference_image": "/root/sakana/characters/mia/reference_image.png",
     "video_mode": "ti2vid",
     "scene_image_strategy": "text_identity",
+}
+
+
+# Default character templates for confession multi-character scenes
+DEFAULT_CONFESSION_CHARACTERS = {
+    "Alex": {
+        "name": "Alex",
+        "gender": "male",
+        "age": "mid-20s",
+        "description": (
+            "handsome man in his mid-20s, short dark hair, clean-shaven, "
+            "expressive brown eyes, athletic build, casual modern clothing"
+        ),
+        "voice": "am_adam",
+    },
+    "Sarah": {
+        "name": "Sarah",
+        "gender": "female",
+        "age": "early-20s",
+        "description": (
+            "beautiful young woman in her early 20s, long brown hair, "
+            "warm hazel eyes, natural makeup, slim build, contemporary casual outfit"
+        ),
+        "voice": "af_nicole",
+    },
 }
 
 
@@ -264,4 +289,58 @@ class CharacterManager:
             "reference_url": self.get_reference_image_url() if self.has_reference_image() else None,
             "voice": self.config.get("voice", "af_bella"),
             "style": self.config.get("style", ""),
+        }
+
+
+class MultiCharacterManager:
+    """Manages multiple characters for confession/drama scenes (text-only, no reference images)."""
+
+    def __init__(self, characters: List[Dict] = None):
+        self.characters = characters or []
+        self._character_map = {c["name"]: c for c in self.characters if isinstance(c, dict) and "name" in c}
+
+    @classmethod
+    def from_plan(cls, plan: Dict):
+        """Create from a confession story plan."""
+        chars = plan.get("characters", [])
+        return cls(chars)
+
+    def get_character_descriptions(self) -> str:
+        """Return a prompt segment describing all characters."""
+        parts = []
+        for char in self.characters:
+            if isinstance(char, dict):
+                name = char.get("name", "Character")
+                desc = char.get("description", char.get("appearance", ""))
+                age = char.get("age", "")
+                gender = char.get("gender", "")
+                if not desc:
+                    desc = f"{age} {gender} person" if age and gender else "person"
+                parts.append(f"{name}: {desc}")
+        return "; ".join(parts) if parts else "two people talking"
+
+    def get_character_prompt_segment(self, character_names: List[str] = None) -> str:
+        """Generate a prompt segment for specific characters in a scene."""
+        if not character_names:
+            return self.get_character_descriptions()
+
+        parts = []
+        for name in character_names:
+            char = self._character_map.get(name)
+            if char:
+                desc = char.get("description", char.get("appearance", ""))
+                parts.append(f"{name} ({desc})")
+        return ", ".join(parts) if parts else self.get_character_descriptions()
+
+    def get_voice_for_character(self, name: str, fallback: str = "af_nicole") -> str:
+        """Get the assigned voice for a character."""
+        char = self._character_map.get(name)
+        if char:
+            return char.get("voice", fallback)
+        return fallback
+
+    def to_dict(self) -> Dict:
+        return {
+            "characters": self.characters,
+            "character_count": len(self.characters),
         }

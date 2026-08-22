@@ -11,11 +11,7 @@ from generator.agnes_client import AgnesClient
 logger = logging.getLogger(__name__)
 
 # Mia influencer daily vlog themes — rotates to avoid repetition
-# Mix: mostly relatable daily-life / emotional moments, with a light "soft mystery"
-# strand mixed in for curiosity. Deliberately avoids horror/supernatural escalation
-# (hidden rooms, doppelgangers, moving reflections) to keep the vlog feel intact.
 MIA_THEMES = [
-    # Emotional / relatable daily life
     "Mia had a quiet morning alone and realized something important about herself.",
     "Mia spent the whole afternoon cleaning her apartment and found an old memory.",
     "Mia tried to have a normal productive day but everything kept going wrong in small ways.",
@@ -26,7 +22,6 @@ MIA_THEMES = [
     "Mia spent hours rearranging her room because she felt stuck in her current life.",
     "Mia watched the rain from her window and started remembering a specific day from last year.",
     "Mia almost cancelled all her plans today just to stay in bed, but forced herself to go out.",
-    # Soft mystery + daily life (small, grounded, not supernatural)
     "Mia found something small in her apartment that she has no memory of buying.",
     "Mia noticed the same person appearing in the background of several of her recent photos.",
     "Mia's phone showed a location she doesn't remember visiting last night.",
@@ -37,7 +32,6 @@ MIA_THEMES = [
     "Mia found a handwritten note under her pillow with only today's date on it.",
     "Mia received a message from an unknown number with a photo of herself.",
     "Mia discovered her social media was tagged in a location she has never visited.",
-    # Slightly deeper / emotional story
     "Mia went back to a place she used to visit often and everything felt different.",
     "Mia deleted old photos from her phone and stopped at one she couldn't bring herself to erase.",
     "Mia wrote a long message to someone and then deleted it without sending.",
@@ -48,10 +42,45 @@ MIA_THEMES = [
     "Mia found a polaroid of herself sleeping on her nightstand.",
 ]
 
-# Genre distribution for variety — weighted toward vlog and soft mystery,
-# with "emotional" folded in. No horror/reaction; keeps tone consistent with
-# a real daily-life vlog rather than a suspense series.
+# Genre distribution for variety
 GENRES = ["daily_vlog", "daily_vlog", "soft_mystery", "emotional", "daily_vlog", "soft_mystery"]
+
+
+# Confession channel themes — multi-character dramatic stories
+CONFESSION_THEMES = [
+    # Breakup / relationship drama
+    "A couple's three-year relationship ends in one conversation after a secret is revealed.",
+    "Someone finds messages on their partner's phone that prove they've been lying.",
+    "A person confesses to cheating and begs for forgiveness while their partner packs a bag.",
+    "Two exes meet for closure and old wounds reopen.",
+    "A boyfriend admits he never told her about his child from a previous relationship.",
+    "A girlfriend confesses she kissed someone else and watches the relationship crumble in real time.",
+    "A husband tries to explain why he was at his ex's apartment last night.",
+    "A wife finds a second phone and confronts her husband.",
+    # Mystery / strange discovery
+    "Someone finds a photo of themselves sleeping on their nightstand and confronts their roommate.",
+    "A woman discovers her boyfriend has been stalking her social media from fake accounts.",
+    "A man finds a box of letters addressed to his girlfriend from someone in prison.",
+    "A couple moves into a new apartment and finds a wall covered in photos of previous tenants.",
+    "A girl finds her boyfriend's journal and reads his darkest secrets out loud to him.",
+    "Someone receives anonymous messages revealing their partner's lies and confronts them.",
+    "A person finds out their best friend and partner were secretly talking behind their back.",
+    # Confession / betrayal
+    "A best friend confesses they've been in love with their friend's partner for years.",
+    "A sibling reveals they know the truth about a family secret that was buried for a decade.",
+    "A coworker confesses they sabotaged someone's promotion and begs for mercy.",
+    "A daughter confronts her mother about the real reason her father left.",
+    "A friend admits they were the one who started the rumor that ruined someone's reputation.",
+    "Someone confesses to a crime their partner committed and demands they turn themselves in.",
+    "A person tells their family they've been faking their entire identity for three years.",
+    # Emotional / dramatic
+    "Two estranged brothers reunite at their father's funeral and old grudges surface.",
+    "A mother and daughter have a raw conversation about why they stopped speaking.",
+    "A man tells his fiancée he doesn't want children on the night before their wedding.",
+    "A woman confesses to her best friend that she's leaving town without saying goodbye to anyone else.",
+]
+
+CONFESSION_GENRES = ["breakup", "mystery", "confession", "betrayal", "breakup", "mystery", "confession"]
 
 
 class StoryGenerator:
@@ -83,7 +112,8 @@ class StoryGenerator:
                     used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     video_job_id TEXT,
                     youtube_video_id TEXT,
-                    status TEXT DEFAULT 'generated'
+                    status TEXT DEFAULT 'generated',
+                    channel TEXT DEFAULT 'mia'
                 )
             """)
             conn.execute("""
@@ -106,19 +136,16 @@ class StoryGenerator:
             """)
             conn.commit()
 
-    def generate_unique_story(self) -> Dict:
-        """Generate a unique story that has never been used before.
-
-        Retries iteratively (not recursively) up to MAX_GENERATION_ATTEMPTS times if the
-        model produces a script that duplicates a previously stored one. The old version of
-        this method called itself recursively on every duplicate with no depth limit, which
-        could recurse indefinitely on a bad run.
-        """
+    def generate_unique_story(self, channel: str = "mia") -> Dict:
+        """Generate a unique story that has never been used before."""
         last_error: Optional[Exception] = None
         for attempt in range(1, self.MAX_GENERATION_ATTEMPTS + 1):
             try:
-                data, script_hash = self._generate_one_candidate()
-            except Exception as exc:  # noqa: BLE001 - surfaced after retries below
+                if channel == "confession":
+                    data, script_hash = self._generate_confession_candidate()
+                else:
+                    data, script_hash = self._generate_mia_candidate()
+            except Exception as exc:
                 last_error = exc
                 logger.warning("Story generation attempt %d/%d failed: %s",
                                attempt, self.MAX_GENERATION_ATTEMPTS, exc)
@@ -126,13 +153,12 @@ class StoryGenerator:
 
             if self._is_duplicate(script_hash):
                 logger.warning(
-                    "Duplicate script detected on attempt %d/%d (hash: %s...), retrying with a new theme...",
+                    "Duplicate script detected on attempt %d/%d (hash: %s...), retrying...",
                     attempt, self.MAX_GENERATION_ATTEMPTS, script_hash[:16],
                 )
                 continue
 
-            # Store in database
-            self._store_story(data["source_theme"], data["genre"], data, script_hash)
+            self._store_story(data["source_theme"], data.get("genre", ""), data, script_hash, channel)
             self._mark_theme_used(data["source_theme"])
             return data
 
@@ -140,14 +166,13 @@ class StoryGenerator:
             f"Failed to generate a unique story after {self.MAX_GENERATION_ATTEMPTS} attempts"
         ) from last_error
 
-    def _generate_one_candidate(self):
-        """Generate a single candidate story (may turn out to be a duplicate)."""
-        theme = self._pick_theme()
+    def _generate_mia_candidate(self):
+        """Generate a single Mia candidate story."""
+        theme = self._pick_theme(MIA_THEMES)
         genre = random.choice(GENRES)
 
-        logger.info("Auto-pilot generating story for theme: %s | genre: %s", theme, genre)
+        logger.info("Auto-pilot generating Mia story for theme: %s | genre: %s", theme, genre)
 
-        # Build prompt for story planner
         instruction = f"""Create one short-form vertical daily-vlog episode starring Mia, a recurring adult female influencer.
 
 This is a VLOG series, not a horror or suspense series. Even when the theme involves
@@ -243,24 +268,105 @@ CRITICAL RULES:
             ),
         )
         data = self._parse_json(raw)
-        data = self._validate_and_fix(data, theme)
+        data = self._validate_and_fix_mia(data, theme)
         script_hash = self._hash_script(data["script"])
         return data, script_hash
 
-    def _pick_theme(self) -> str:
+    def _generate_confession_candidate(self):
+        """Generate a single confession candidate story with multi-character dialogue."""
+        theme = self._pick_theme(CONFESSION_THEMES)
+        genre = random.choice(CONFESSION_GENRES)
+
+        logger.info("Auto-pilot generating confession story for theme: %s | genre: %s", theme, genre)
+
+        instruction = f"""Create one short-form vertical cinematic scene featuring 2-3 characters in a dramatic confrontation.
+
+This is a CINEMATIC scene, not a vlog. It should feel like a clip from a relationship
+drama, mystery, or confession scene — emotionally raw, realistic, and intense.
+
+Theme: {theme}
+Genre: {genre}
+
+Create 2-3 characters with distinct voices and roles. The script must be DIALOGUE ONLY —
+no narration. Each line starts with the character name in ALL CAPS followed by a colon.
+The dialogue should feel natural, with interruptions, emotional breaks, and realistic pacing.
+
+The scene must have a clear starting situation (point_a) and a changed ending (point_b).
+Every scene must directly continue from the previous one — no disconnected moments.
+
+Return ONLY valid JSON with this exact shape:
+{{
+  "title": "short dramatic curiosity-driven title",
+  "genre": "{genre}",
+  "tone": "tense|heartbreaking|confrontational|mysterious",
+  "characters": [
+    {{"name": "Alex", "gender": "male", "age": "mid-20s", "role": "protagonist", "voice": "am_adam"}},
+    {{"name": "Sarah", "gender": "female", "age": "early-20s", "role": "partner", "voice": "af_nicole"}}
+  ],
+  "point_a": "one sentence: the relationship/situation before the confrontation",
+  "point_b": "one sentence: what has changed irreversibly by the end",
+  "script": "30-50 seconds of dialogue. ALEX: I need to tell you something.\\nSARAH: What is it?\\nALEX: I've been lying.",
+  "opening_hook": "the FIRST 2 lines of dialogue that immediately create tension or reveal something",
+  "final_reveal": "the final 2-3 lines that deliver the emotional payoff or devastating truth",
+  "scenes": [
+    {{
+      "index": 1,
+      "beat": "setup|confrontation|escalation|climax|fallout",
+      "follows_from_previous": "opening",
+      "dialogue_segment": "the lines of dialogue in this scene",
+      "location": "specific location",
+      "action": "what the characters physically do",
+      "shot_type": "wide two-shot|medium close-up|over-the-shoulder|close-up reaction|tracking shot",
+      "visual_prompt": "specific visual beat with character actions and expressions",
+      "camera_motion": "handheld drift|push-in|tracking|static cinematic",
+      "lighting": "dramatic natural|warm tense|cool moody|harsh overhead",
+      "expression": "character expressions",
+      "emotional_state": "tense",
+      "story_event": "what happens in this scene",
+      "transition": "cut"
+    }}
+  ]
+}}
+
+CRITICAL RULES:
+1. The hook (first 2 lines) must be explosive — a secret, accusation, or discovery.
+2. Every scene must show characters physically interacting and reacting.
+3. Dialogue must feel like real people speaking, not scripted lines.
+4. The ending must deliver a clear emotional change from point_a to point_b.
+5. NO narration, NO first-person storytelling, NO "Mia".
+6. Use cinematic shot descriptions with specific camera angles and movement.
+7. Keep it grounded and realistic — no supernatural elements.
+8. Use 3-5 scenes, each a distinct narrative beat.
+9. Avoid copyrighted characters, brands, on-screen text.
+
+Available voices (use EXACTLY these):
+- Female: af_bella, af_nicole, af_sky, af_sarah
+- Male: am_adam, am_michael
+"""
+        raw = self.agnes.chat(
+            instruction,
+            max_tokens=4000,
+            temperature=0.7,
+            system_prompt=(
+                "You are a strict JSON-only cinematic screenwriter. You write intense, "
+                "realistic dialogue scenes between 2-3 characters that feel like clips from "
+                "a drama series. Every scene shows physical interaction and emotional "
+                "reaction. You enforce continuity, cinematic visuals, and powerful hooks."
+            ),
+        )
+        data = self._parse_json(raw)
+        data = self._validate_and_fix_confession(data, theme)
+        script_hash = self._hash_script(data["script"])
+        return data, script_hash
+
+    def _pick_theme(self, theme_list: List[str]) -> str:
         """Pick the least-used theme to ensure variety."""
         with self._connect() as conn:
-            # Get usage counts
-            rows = conn.execute(
-                "SELECT theme, use_count FROM theme_usage"
-            ).fetchall()
+            rows = conn.execute("SELECT theme, use_count FROM theme_usage").fetchall()
             usage = {row["theme"]: row["use_count"] for row in rows}
 
-        # Find minimum usage count
-        min_count = min((usage.get(t, 0) for t in MIA_THEMES), default=0)
-
-        # Get all themes with minimum usage
-        candidates = [t for t in MIA_THEMES if usage.get(t, 0) == min_count]
+        min_count = min((usage.get(t, 0) for t in theme_list), default=0)
+        candidates = [t for t in theme_list if usage.get(t, 0) == min_count]
         return random.choice(candidates)
 
     def _mark_theme_used(self, theme: str):
@@ -287,14 +393,14 @@ CRITICAL RULES:
             ).fetchone()
             return row is not None
 
-    def _store_story(self, theme: str, genre: str, data: Dict, script_hash: str):
+    def _store_story(self, theme: str, genre: str, data: Dict, script_hash: str, channel: str = "mia"):
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO generated_stories
-                (theme, genre, title, script, script_hash, status)
-                VALUES (?, ?, ?, ?, ?, 'generated')
+                (theme, genre, title, script, script_hash, status, channel)
+                VALUES (?, ?, ?, ?, ?, 'generated', ?)
             """, (
-                theme, genre, data.get("title", ""), data["script"], script_hash
+                theme, genre, data.get("title", ""), data["script"], script_hash, channel
             ))
             conn.commit()
 
@@ -338,7 +444,7 @@ CRITICAL RULES:
             "uploaded_to_youtube": uploaded,
             "pending_generation": pending,
             "unique_themes_used": theme_count,
-            "total_themes_available": len(MIA_THEMES),
+            "total_themes_available": len(MIA_THEMES) + len(CONFESSION_THEMES),
         }
 
     @staticmethod
@@ -356,12 +462,10 @@ CRITICAL RULES:
             logger.error("Invalid story JSON: %s", text[:1500])
             raise RuntimeError(f"Story generator returned invalid JSON: {exc}") from exc
 
-    def _validate_and_fix(self, data: Dict, theme: str) -> Dict:
+    def _validate_and_fix_mia(self, data: Dict, theme: str) -> Dict:
         script = str(data.get("script") or "").strip()
         scenes = data.get("scenes")
         if not script or not isinstance(scenes, list) or not scenes:
-            # Fallback: build a minimal but still point-A-to-B, single-thread story instead
-            # of one flat, static scene. This only fires if the model's JSON was unusable.
             setup_line = f"Okay guys, so {theme.lower()}"
             turn_line = "I need to figure out what's actually going on before I do anything else."
             reveal_line = "I still don't have an answer, and that honestly scares me more than if I did."
@@ -426,4 +530,98 @@ CRITICAL RULES:
             "key_objects": data.get("key_objects", []),
             "scenes": scenes,
             "source_theme": theme,
+            "channel": "mia",
+        }
+
+    def _validate_and_fix_confession(self, data: Dict, theme: str) -> Dict:
+        """Validate and fix confession multi-character story data."""
+        from generator.story_planner import CONFESSION_VOICES
+
+        if "title" not in data or not data["title"]:
+            data["title"] = theme[:60] if len(theme) <= 60 else theme[:57] + "..."
+
+        if "genre" not in data or not data["genre"]:
+            data["genre"] = "confession"
+
+        # Ensure characters exist with valid voices
+        if "characters" not in data or not isinstance(data["characters"], list) or len(data["characters"]) < 2:
+            data["characters"] = [
+                {"name": "Alex", "gender": "male", "age": "mid-20s", "role": "protagonist", "voice": "am_adam"},
+                {"name": "Sarah", "gender": "female", "age": "early-20s", "role": "partner", "voice": "af_nicole"},
+            ]
+
+        valid_voices = set(CONFESSION_VOICES["female"] + CONFESSION_VOICES["male"])
+        for char in data["characters"]:
+            if char.get("voice") not in valid_voices:
+                gender = char.get("gender", "female").lower()
+                char["voice"] = random.choice(CONFESSION_VOICES.get(gender, CONFESSION_VOICES["female"]))
+
+        if "script" not in data or not data["script"]:
+            raise RuntimeError("Missing required field: script")
+
+        if "scenes" not in data or not isinstance(data["scenes"], list) or len(data["scenes"]) == 0:
+            data["scenes"] = [
+                {
+                    "index": 1, "beat": "setup", "follows_from_previous": "opening",
+                    "dialogue_segment": data["script"][:150],
+                    "location": "apartment living room", "action": "characters confronting each other",
+                    "shot_type": "wide two-shot", "visual_prompt": "two characters in tense confrontation",
+                    "camera_motion": "handheld drift", "lighting": "warm tense", "expression": "emotional",
+                    "emotional_state": "tense", "story_event": "confrontation begins", "transition": "cut",
+                },
+                {
+                    "index": 2, "beat": "climax", "follows_from_previous": "the accusation",
+                    "dialogue_segment": data["script"][150:300],
+                    "location": "same room", "action": "emotional reaction and revelation",
+                    "shot_type": "close-up reaction", "visual_prompt": "character's face showing shock",
+                    "camera_motion": "push-in", "lighting": "dramatic", "expression": "devastated",
+                    "emotional_state": "heartbreaking", "story_event": "truth revealed", "transition": "cut",
+                },
+                {
+                    "index": 3, "beat": "fallout", "follows_from_previous": "the revelation",
+                    "dialogue_segment": data["script"][300:],
+                    "location": "same room", "action": "one character leaves or relationship ends",
+                    "shot_type": "medium shot", "visual_prompt": "character walking away or sitting in silence",
+                    "camera_motion": "tracking", "lighting": "cool moody", "expression": "defeated",
+                    "emotional_state": "defeated", "story_event": "relationship irreversibly changed", "transition": "cut",
+                },
+            ]
+
+        data.setdefault("point_a", "")
+        data.setdefault("point_b", "")
+
+        # Clean
+        data["title"] = StoryPlanner._strip_ai_words(str(data["title"]).strip())
+        data["script"] = StoryPlanner._strip_ai_words(str(data["script"]).strip())
+
+        # Ensure scenes have all required fields
+        for i, scene in enumerate(data["scenes"]):
+            scene.setdefault("index", i + 1)
+            scene.setdefault("beat", "escalation")
+            scene.setdefault("follows_from_previous", "opening" if i == 0 else "the previous scene")
+            scene.setdefault("dialogue_segment", "")
+            scene.setdefault("location", "apartment")
+            scene.setdefault("action", "characters talking")
+            scene.setdefault("shot_type", "medium close-up")
+            scene.setdefault("visual_prompt", scene.get("description", "cinematic scene"))
+            scene.setdefault("camera_motion", "handheld drift")
+            scene.setdefault("lighting", "warm tense")
+            scene.setdefault("expression", "emotional")
+            scene.setdefault("emotional_state", "tense")
+            scene.setdefault("story_event", "confrontation")
+            scene.setdefault("transition", "cut")
+
+        return {
+            "title": data["title"][:100],
+            "genre": data["genre"].strip().lower(),
+            "tone": str(data.get("tone") or "tense").strip(),
+            "characters": data["characters"],
+            "point_a": str(data.get("point_a", "")).strip()[:300],
+            "point_b": str(data.get("point_b", "")).strip()[:300],
+            "script": data["script"],
+            "opening_hook": str(data.get("opening_hook") or data["script"][:100]).strip()[:300],
+            "final_reveal": str(data.get("final_reveal") or data["script"][-200:]).strip()[:300],
+            "scenes": data["scenes"],
+            "source_theme": theme,
+            "channel": "confession",
         }
