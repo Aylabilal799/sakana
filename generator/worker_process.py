@@ -64,7 +64,7 @@ def mark_completed(job_id: str, metadata: dict, yt_video_id: str = None) -> None
         with sqlite3.connect(DB, timeout=30) as conn:
             conn.execute(
                 """UPDATE jobs SET status='COMPLETED', stage='COMPLETED', progress=100,
-                   current_step='COMPLETED', status_message='Mia video completed', completed_at=CURRENT_TIMESTAMP,
+                   current_step='COMPLETED', status_message='Video completed', completed_at=CURRENT_TIMESTAMP,
                    output_path=?, output_url=?, seo_url=?, metadata_json=?, youtube_video_id=?, youtube_uploaded=?
                    WHERE job_id=?""",
                 (
@@ -105,6 +105,17 @@ def _is_queue_full_error(exc: Exception) -> bool:
     )
 
 
+def _is_session_error(exc: Exception) -> bool:
+    """Check if TikTok error is session/cookie/login related."""
+    msg = str(exc).lower()
+    session_keywords = [
+        "login", "cookie", "session", "auth", "unauthorized",
+        "not logged in", "please log in", "no cookies",
+        "tk_cookies", "account", "credential"
+    ]
+    return any(kw in msg for kw in session_keywords)
+
+
 def _kill_orphan_browsers():
     """Kill any stuck chromium or playwright processes left by a timed-out upload."""
     try:
@@ -113,6 +124,63 @@ def _kill_orphan_browsers():
         logger.info("Cleaned up orphan browser processes")
     except Exception:
         pass
+
+
+def _refresh_tiktok_session(account: str) -> bool:
+    """
+    Visit TikTok upload page with existing cookies to refresh the session.
+    Saves refreshed cookies back to the cookies file.
+    Returns True if session seems valid, False if expired.
+    """
+    cookies_file = PROJECT_ROOT / f"TK_cookies_{account}.json"
+    if not cookies_file.exists():
+        logger.warning("No cookies file found at %s", cookies_file)
+        return False
+
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with open(cookies_file, "r", encoding="utf-8") as f:
+            cookies = json.load(f)
+        logger.info("Loaded %d cookies for session refresh", len(cookies))
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ])
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            )
+            context.add_cookies(cookies)
+            page = context.new_page()
+
+            logger.info("Navigating to TikTok upload page for session refresh...")
+            page.goto("https://www.tiktok.com/upload", timeout=60000, wait_until="networkidle")
+            time.sleep(5)
+
+            page_content = page.content().lower()
+            if "login" in page_content and "phone" in page_content:
+                logger.error("Session refresh failed — TikTok redirected to login page")
+                browser.close()
+                return False
+
+            # Save refreshed cookies
+            refreshed = context.cookies()
+            with open(cookies_file, "w", encoding="utf-8") as f:
+                json.dump(refreshed, f, indent=2)
+            logger.info("Session refresh successful — saved %d refreshed cookies", len(refreshed))
+            browser.close()
+            return True
+
+    except ImportError:
+        logger.error("playwright not installed — cannot refresh session")
+        return False
+    except Exception as e:
+        logger.exception("Session refresh failed: %s", e)
+        return False
 
 
 def _upload_tiktok_with_timeout(
@@ -171,25 +239,52 @@ def _upload_tiktok_with_timeout(
         return False, {"error": str(e)}
 
 
-def run_job(job_id: str, prompt: str, genre: str, scheduled_time_iso: str = None) -> dict:
+def run_job(job_id: str, prompt: str, genre: str, scheduled_time_iso: str = None, channel: str = "mia") -> dict:
+    is_confession = channel == "confession"
+    logger.info("Starting job %s on channel '%s'", job_id, channel)
+
     def callback(stage, progress, message):
         update_progress(job_id, stage, progress, message)
         print(json.dumps({"type": "progress", "stage": stage, "progress": progress, "message": message}), flush=True)
 
-    pipeline = VideoPipeline(job_id, status_callback=callback)
+    pipeline = VideoPipeline(job_id, status_callback=callback, channel=channel)
     metadata = pipeline.run(prompt, genre)
+    metadata["channel"] = channel
 
     video_path = metadata.get("video", {}).get("path")
-    title = metadata.get("youtube", {}).get("title", "Mia\'s Daily Vlog")
+    default_title = "Confession Story" if is_confession else "Mia's Daily Vlog"
+    title = metadata.get("youtube", {}).get("title", default_title)
 
-    # Phase 2: YouTube upload
+    # Phase 2: YouTube upload (channel-specific credentials)
     yt_video_id = None
     try:
         update_progress(job_id, "YOUTUBE_UPLOADING", 97, "📺 Uploading to YouTube...")
         print(json.dumps({"type": "progress", "stage": "YOUTUBE_UPLOADING", "progress": 97, "message": "📺 Uploading to YouTube..."}), flush=True)
 
+        # Switch credentials for confession channel
+        if is_confession:
+            confess_token = os.getenv("CONFESS_YOUTUBE_TOKEN_FILE")
+            confess_secret = os.getenv("CONFESS_YOUTUBE_CLIENT_SECRETS_FILE")
+            if confess_token:
+                os.environ["YOUTUBE_TOKEN_FILE"] = confess_token
+                logger.info("Using confession YouTube token: %s", confess_token)
+            if confess_secret:
+                os.environ["YOUTUBE_CLIENT_SECRETS_FILE"] = confess_secret
+                logger.info("Using confession YouTube client secret: %s", confess_secret)
+
         yt_uploader = YouTubeUploader()
-        scheduled_dt = datetime.fromisoformat(scheduled_time_iso) if scheduled_time_iso else None
+        scheduled_dt = None
+        if scheduled_time_iso:
+            try:
+                scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
+                # YouTube API requires UTC; enforce if naive
+                if scheduled_dt.tzinfo is None:
+                    from datetime import timezone
+                    scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+                logger.info("YouTube scheduled time parsed: %s (UTC)", scheduled_dt.isoformat())
+            except Exception as e:
+                logger.error("Failed to parse scheduled_time '%s': %s", scheduled_time_iso, e)
+                scheduled_dt = None
 
         yt_result = yt_uploader.upload_video(
             video_path=video_path,
@@ -207,11 +302,14 @@ def run_job(job_id: str, prompt: str, genre: str, scheduled_time_iso: str = None
         logger.exception("YouTube upload failed for %s", job_id)
         print(json.dumps({"type": "youtube_error", "error": str(yt_exc)}), flush=True)
 
-    # Phase 3: TikTok upload with subprocess timeout + retry loop
+    # Phase 3: TikTok upload (Mia only)
     tiktok_url = None
     tiktok_account = os.getenv("TIKTOK_ACCOUNT_NAME", "")
 
-    if not tiktok_account:
+    if is_confession:
+        logger.info("Confession channel — skipping TikTok upload by design")
+        metadata["tiktok"] = {"skipped": True, "reason": "Confession channel does not use TikTok"}
+    elif not tiktok_account:
         logger.warning("TIKTOK_ACCOUNT_NAME not set in .env — skipping TikTok upload")
         metadata["tiktok"] = {"error": "TIKTOK_ACCOUNT_NAME not configured in .env"}
     else:
@@ -255,12 +353,39 @@ def run_job(job_id: str, prompt: str, genre: str, scheduled_time_iso: str = None
                 print(json.dumps({"type": "tiktok", "url": tiktok_url}), flush=True)
                 break
 
+            # Upload failed — check if it's a session error
+            error_msg = result.get("error", "")
             logger.warning(
                 "TikTok upload attempt %d/%d failed for %s: %s",
-                tt_attempt, TIKTOK_UPLOAD_RETRIES, job_id, result.get("error", "Unknown")
+                tt_attempt, TIKTOK_UPLOAD_RETRIES, job_id, error_msg
             )
 
-            if tt_attempt < TIKTOK_UPLOAD_RETRIES:
+            # If session/cookie error and we have more retries, refresh session first
+            if _is_session_error(Exception(error_msg)) and tt_attempt < TIKTOK_UPLOAD_RETRIES:
+                logger.info("Session error detected — refreshing TikTok session before retry...")
+                update_progress(
+                    job_id,
+                    "TIKTOK_UPLOADING",
+                    98,
+                    f"🔑 Refreshing TikTok session... (attempt {tt_attempt}/{TIKTOK_UPLOAD_RETRIES})"
+                )
+                refreshed = _refresh_tiktok_session(tiktok_account)
+                if refreshed:
+                    logger.info("Session refreshed — will retry upload")
+                else:
+                    logger.error("Session refresh failed — will try upload anyway")
+
+                logger.info("Waiting %ds before TikTok retry...", TIKTOK_UPLOAD_RETRY_DELAY)
+                update_progress(
+                    job_id,
+                    "TIKTOK_UPLOADING",
+                    98,
+                    f"⏳ Retrying TikTok upload in {TIKTOK_UPLOAD_RETRY_DELAY}s (attempt {tt_attempt}/{TIKTOK_UPLOAD_RETRIES})"
+                )
+                time.sleep(TIKTOK_UPLOAD_RETRY_DELAY)
+
+            elif tt_attempt < TIKTOK_UPLOAD_RETRIES:
+                # Non-session error but still have retries
                 logger.info("Waiting %ds before TikTok retry...", TIKTOK_UPLOAD_RETRY_DELAY)
                 update_progress(
                     job_id,
@@ -269,9 +394,11 @@ def run_job(job_id: str, prompt: str, genre: str, scheduled_time_iso: str = None
                     f"⏳ TikTok failed, retrying in {TIKTOK_UPLOAD_RETRY_DELAY}s (attempt {tt_attempt}/{TIKTOK_UPLOAD_RETRIES})"
                 )
                 time.sleep(TIKTOK_UPLOAD_RETRY_DELAY)
+
             else:
+                # All retries exhausted
                 logger.error("All %d TikTok upload attempts failed for %s", TIKTOK_UPLOAD_RETRIES, job_id)
-                metadata["tiktok"] = {"error": f"All {TIKTOK_UPLOAD_RETRIES} attempts failed. Last: {result.get('error', 'Unknown')}"}
+                metadata["tiktok"] = {"error": f"All {TIKTOK_UPLOAD_RETRIES} attempts failed. Last: {error_msg[:500]}"}
 
         if tiktok_url:
             metadata["tiktok"] = {"url": tiktok_url}
@@ -281,11 +408,12 @@ def run_job(job_id: str, prompt: str, genre: str, scheduled_time_iso: str = None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Mia video generation + YouTube upload worker")
+    parser = argparse.ArgumentParser(description="Run video generation + YouTube upload worker")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--genre", default="auto")
     parser.add_argument("--scheduled-time", default=None, help="ISO format UTC datetime for YouTube scheduling")
+    parser.add_argument("--channel", default="mia", choices=["mia", "confession"], help="Target channel")
     args = parser.parse_args()
 
     last_error = None
@@ -295,9 +423,9 @@ def main():
 
     while True:
         attempt += 1
-        logger.info("Worker starting job %s (attempt %d)", args.job_id, attempt)
+        logger.info("Worker starting job %s (attempt %d, channel=%s)", args.job_id, attempt, args.channel)
         try:
-            run_job(args.job_id, args.prompt, args.genre, args.scheduled_time)
+            run_job(args.job_id, args.prompt, args.genre, args.scheduled_time, args.channel)
             print(json.dumps({"type": "completed"}), flush=True)
             logger.info("Worker completed job %s on attempt %d", args.job_id, attempt)
             return
