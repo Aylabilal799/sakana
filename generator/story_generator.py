@@ -57,6 +57,8 @@ GENRES = ["daily_vlog", "daily_vlog", "soft_mystery", "emotional", "daily_vlog",
 class StoryGenerator:
     """Auto-generates unique Mia vlog scripts using Agnes, with SQLite deduplication."""
 
+    MAX_GENERATION_ATTEMPTS = 5
+
     def __init__(self, agnes: AgnesClient, db_path: Optional[str] = None):
         self.agnes = agnes
         self.db_path = db_path or "/root/sakana/data/autopilot.db"
@@ -105,8 +107,41 @@ class StoryGenerator:
             conn.commit()
 
     def generate_unique_story(self) -> Dict:
-        """Generate a unique story that has never been used before."""
-        # Get least-used themes first
+        """Generate a unique story that has never been used before.
+
+        Retries iteratively (not recursively) up to MAX_GENERATION_ATTEMPTS times if the
+        model produces a script that duplicates a previously stored one. The old version of
+        this method called itself recursively on every duplicate with no depth limit, which
+        could recurse indefinitely on a bad run.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self.MAX_GENERATION_ATTEMPTS + 1):
+            try:
+                data, script_hash = self._generate_one_candidate()
+            except Exception as exc:  # noqa: BLE001 - surfaced after retries below
+                last_error = exc
+                logger.warning("Story generation attempt %d/%d failed: %s",
+                               attempt, self.MAX_GENERATION_ATTEMPTS, exc)
+                continue
+
+            if self._is_duplicate(script_hash):
+                logger.warning(
+                    "Duplicate script detected on attempt %d/%d (hash: %s...), retrying with a new theme...",
+                    attempt, self.MAX_GENERATION_ATTEMPTS, script_hash[:16],
+                )
+                continue
+
+            # Store in database
+            self._store_story(data["source_theme"], data["genre"], data, script_hash)
+            self._mark_theme_used(data["source_theme"])
+            return data
+
+        raise RuntimeError(
+            f"Failed to generate a unique story after {self.MAX_GENERATION_ATTEMPTS} attempts"
+        ) from last_error
+
+    def _generate_one_candidate(self):
+        """Generate a single candidate story (may turn out to be a duplicate)."""
         theme = self._pick_theme()
         genre = random.choice(GENRES)
 
@@ -122,15 +157,32 @@ her day — curious or a little unsettled at most, never scared, never horror-co
 Theme: {theme}
 Genre: {genre}
 
+THIS MUST BE ONE CONTINUOUS STORY, NOT SEPARATE MOMENTS STRUNG TOGETHER. Every scene must
+be a direct continuation of the event/object introduced in the scene before it — never a
+new, unrelated moment. If you removed the connecting object or action from a scene, the
+following scene should stop making sense. Concretely: define a starting point (point_a —
+Mia's situation before anything happens) and an ending point (point_b — what's concretely
+different by the end), then write scenes that visibly travel from one to the other without
+skipping to disconnected side-moments (no "she found the note" in scene 1 followed by an
+unrelated "she's texting a friend" in scene 2 — scene 2 must be about what she does because
+of the note).
+
+HOOK TIMING: The opening_hook must be short enough to be spoken in under 3 seconds
+(roughly 8-10 words) and scene 1's visual must be an already-in-motion or visually striking
+moment — not a static "Mia sitting/standing looking at camera" shot. The first thing the
+viewer sees and hears must justify itself before they can swipe away.
+
 Return ONLY valid JSON with this exact shape:
 {{
   "title": "short curiosity-driven episode title (no horror-movie phrasing)",
   "genre": "{genre}",
   "tone": "warm natural|soft emotional|light curiosity",
   "outfit": "one concise continuity outfit description",
+  "point_a": "one sentence: Mia's situation/understanding at the very start, before anything happens",
+  "point_b": "one sentence: Mia's situation/understanding at the very end, and what concretely changed from point_a",
   "script": "30-45 second first-person narration spoken by Mia. Natural, conversational vlog speech, like she's talking to her phone. Small natural fillers are fine (right?, I swear, okay so...). No awkward fragments.",
-  "opening_hook": "the FIRST 1-2 sentences that immediately establish curiosity or emotion — not dread",
-  "final_reveal": "the final 2-3 sentences with an emotional realization or open question, not a scare",
+  "opening_hook": "the FIRST 1-2 short sentences (under 3 seconds spoken) that immediately establish curiosity or emotion — not dread",
+  "final_reveal": "the final 2-3 sentences with an emotional realization or open question that matches point_b, not a scare",
   "key_objects": [
     {{"name": "object_id", "type": "photograph|phone|letter|key|book|document|prop", "description": "visual description", "introduced_scene": 1}}
   ],
@@ -138,6 +190,8 @@ Return ONLY valid JSON with this exact shape:
   "scenes": [
     {{
       "index": 1,
+      "beat": "setup|inciting_incident|escalation|turn|resolution",
+      "follows_from_previous": "one short phrase naming exactly what carries over from the previous scene (object/action/question) — for scene 1, write 'opening'",
       "narration": "exact contiguous portion of the script",
       "location": "specific location",
       "location_change_reason": "explicit script justification or same_location",
@@ -150,43 +204,48 @@ Return ONLY valid JSON with this exact shape:
       "objects_visible": ["object_id"],
       "objects_held": ["object_id"],
       "emotional_state": "curious",
-      "story_event": "what narrative event happens in this scene",
+      "story_event": "what narrative event happens in this scene, and how it directly continues the previous scene's event/object",
       "transition": "cut|crossfade"
     }}
   ]
 }}
 
 CRITICAL RULES:
-1. OPENING HOOK: Start with an attention-grabbing first sentence that creates curiosity or emotion — not dread. No boring exposition.
-2. NATURAL SPEECH: Mia sounds like a real 20-something talking casually to her camera. Casual, conversational, first-person.
-3. FINAL REVEAL: Deliver a payoff — an emotional realization or an open question that makes people want the next video. Avoid horror-style scares or "impossible" supernatural details.
-4. STAY GROUNDED: If the theme involves something odd, keep it small and real-world (a note, a message, a playlist, a delivery) — not supernatural escalation (secret rooms, doppelgangers, objects moving on their own).
-5. CONTINUITY: Same location unless script justifies movement. Objects persist.
-6. Use 4-6 scenes. Each scene a clear narrative beat.
-7. Emotional progression builds logically and stays within "curious / uneasy / reflective" — not "terrified."
-8. One outfit unless script changes time/day.
-9. Avoid copyrighted characters, brands, on-screen text.
+1. ONE CONTINUOUS THREAD: Every scene's story_event must be a direct consequence of the
+   previous scene's event. No scene may introduce an unrelated moment (a random phone check,
+   an unrelated errand, a disconnected feeling) that doesn't continue what came before. Use
+   the "follows_from_previous" field on every scene to prove the link before writing it.
+2. HOOK LANDS FAST: opening_hook must be short enough to land in under 3 seconds, and
+   scene 1 must show Mia already mid-action or reacting to something, not a static
+   introduction shot. No slow build-up before the hook.
+3. OPENING HOOK: Start with an attention-grabbing first sentence that creates curiosity or emotion — not dread. No boring exposition.
+4. NATURAL SPEECH: Mia sounds like a real 20-something talking casually to her camera. Casual, conversational, first-person.
+5. FINAL REVEAL: Deliver a payoff — an emotional realization or an open question that makes people want the next video, and that matches point_b. Avoid horror-style scares or "impossible" supernatural details.
+6. STAY GROUNDED: If the theme involves something odd, keep it small and real-world (a note, a message, a playlist, a delivery) — not supernatural escalation (secret rooms, doppelgangers, objects moving on their own).
+7. CONTINUITY: Same location unless script justifies movement. Objects persist and, once introduced, must be referenced again if they matter to the outcome.
+8. Use 4-6 scenes. Each scene a clear, distinct narrative beat — reject filler or scenes that could be deleted without losing story information.
+9. Emotional progression builds logically and stays within "curious / uneasy / reflective" — not "terrified."
+10. One outfit unless script changes time/day.
+11. Avoid copyrighted characters, brands, on-screen text.
 """
         raw = self.agnes.chat(
             instruction,
             max_tokens=4000,
-            temperature=0.65,
-            system_prompt="You are a strict JSON-only short-form video writer. You write natural conversational vlog scripts with strong hooks and satisfying endings. You enforce physical continuity and emotional progression.",
+            temperature=0.6,
+            system_prompt=(
+                "You are a strict JSON-only short-form video writer. You write natural "
+                "conversational vlog scripts with strong hooks and satisfying endings. Every "
+                "script must travel from a clear starting situation (point_a) to a clear, "
+                "changed ending situation (point_b) as ONE continuous thread — every scene "
+                "must be a direct consequence of the one before it, never a disconnected new "
+                "moment. The hook must land in under 3 seconds. You enforce physical "
+                "continuity, one narrative beat per scene, and logical emotional progression."
+            ),
         )
         data = self._parse_json(raw)
         data = self._validate_and_fix(data, theme)
-
-        # Check for duplicates using script hash
         script_hash = self._hash_script(data["script"])
-        if self._is_duplicate(script_hash):
-            logger.warning("Duplicate script detected (hash: %s...), regenerating...", script_hash[:16])
-            return self.generate_unique_story()  # Retry with different theme
-
-        # Store in database
-        self._store_story(theme, genre, data, script_hash)
-        self._mark_theme_used(theme)
-
-        return data
+        return data, script_hash
 
     def _pick_theme(self) -> str:
         """Pick the least-used theme to ensure variety."""
@@ -301,24 +360,65 @@ CRITICAL RULES:
         script = str(data.get("script") or "").strip()
         scenes = data.get("scenes")
         if not script or not isinstance(scenes, list) or not scenes:
-            # Fallback: use theme as script
-            script = f"Guys, {theme.lower()} I am genuinely confused right now."
-            scenes = [{
-                "index": 1, "narration": script, "location": "Mia's apartment",
-                "location_change_reason": "same_location", "action": "Mia records her vlog",
-                "shot_type": "selfie medium", "visual_prompt": script,
-                "camera_motion": "subtle handheld push-in",
-                "lighting": "natural warm realistic light",
-                "expression": "natural and concerned", "objects_visible": [],
-                "objects_held": [], "emotional_state": "curious",
-                "story_event": script[:100], "transition": "cut",
-            }]
+            # Fallback: build a minimal but still point-A-to-B, single-thread story instead
+            # of one flat, static scene. This only fires if the model's JSON was unusable.
+            setup_line = f"Okay guys, so {theme.lower()}"
+            turn_line = "I need to figure out what's actually going on before I do anything else."
+            reveal_line = "I still don't have an answer, and that honestly scares me more than if I did."
+            script = f"{setup_line} {turn_line} {reveal_line}"
+            scenes = [
+                {
+                    "index": 1, "beat": "setup", "follows_from_previous": "opening",
+                    "narration": setup_line,
+                    "location": "Mia's apartment", "location_change_reason": "same_location",
+                    "action": "Mia notices something is off and starts filming",
+                    "shot_type": "selfie medium", "visual_prompt": setup_line,
+                    "camera_motion": "subtle handheld push-in",
+                    "lighting": "natural warm realistic light",
+                    "expression": "curious and uneasy", "objects_visible": [],
+                    "objects_held": [], "emotional_state": "curious",
+                    "story_event": "Mia establishes what's out of place.", "transition": "cut",
+                },
+                {
+                    "index": 2, "beat": "escalation",
+                    "follows_from_previous": "the thing Mia noticed in scene 1",
+                    "narration": turn_line,
+                    "location": "Mia's apartment", "location_change_reason": "same_location",
+                    "action": "Mia investigates further, visibly more unsettled",
+                    "shot_type": "handheld medium", "visual_prompt": turn_line,
+                    "camera_motion": "gentle handheld drift",
+                    "lighting": "natural warm realistic light",
+                    "expression": "worried and focused", "objects_visible": [],
+                    "objects_held": [], "emotional_state": "uneasy",
+                    "story_event": "Mia commits to getting an answer about the same thing.",
+                    "transition": "cut",
+                },
+                {
+                    "index": 3, "beat": "resolution",
+                    "follows_from_previous": "what Mia found while investigating in scene 2",
+                    "narration": reveal_line,
+                    "location": "Mia's apartment", "location_change_reason": "same_location",
+                    "action": "Mia looks directly at camera, shaken",
+                    "shot_type": "reaction close-up", "visual_prompt": reveal_line,
+                    "camera_motion": "subtle push-in",
+                    "lighting": "natural warm realistic light",
+                    "expression": "shocked and unsettled", "objects_visible": [],
+                    "objects_held": [], "emotional_state": "shocked",
+                    "story_event": "Mia ends in a worse, changed state than she started in, "
+                                   "directly caused by scene 2's investigation.",
+                    "transition": "cut",
+                },
+            ]
+            data.setdefault("point_a", setup_line)
+            data.setdefault("point_b", reveal_line)
 
         return {
             "title": str(data.get("title") or "Mia's Daily Vlog").strip()[:100],
             "genre": str(data.get("genre") or "daily_vlog").strip().lower(),
             "tone": str(data.get("tone") or "warm natural").strip(),
             "outfit": str(data.get("outfit") or "cream fitted top and high-waisted blue jeans").strip(),
+            "point_a": str(data.get("point_a") or "").strip()[:300],
+            "point_b": str(data.get("point_b") or "").strip()[:300],
             "script": script,
             "opening_hook": str(data.get("opening_hook") or scenes[0]["narration"]).strip()[:300],
             "final_reveal": str(data.get("final_reveal") or scenes[-1]["narration"]).strip()[:300],

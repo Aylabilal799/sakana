@@ -13,7 +13,7 @@ class StoryPlanner:
         self.agnes = agnes_client
 
     def plan(self, user_prompt: str, max_attempts: int = 3) -> Dict:
-        """Plan a Mia vlog with action-driven scene descriptions for realistic footage."""
+        """Plan a Mia vlog with action-driven, causally-linked scene descriptions for realistic footage."""
 
         system_prompt = (
             "You are a cinematic storyboard planner for Mia, a female daily vlogger and storyteller. "
@@ -30,32 +30,42 @@ class StoryPlanner:
             "7. Keep Mia's face, hairstyle, clothing, body proportions consistent across every scene.\n"
             "8. The viewer should feel they are watching REAL FOOTAGE of Mia living through the story, not one image being zoomed.\n"
             "9. Read the script first. Identify EVERY action and location change. Create a SEPARATE visual shot for EACH story beat.\n"
-            "10. Do NOT skip or visually substitute actions described in the script.\n\n"
+            "10. Do NOT skip or visually substitute actions described in the script.\n"
+            "11. ONE CONTINUOUS THREAD: Every scene must be a direct consequence of the scene before it. "
+            "Never insert a new, unrelated moment (a random check of her phone, an unrelated errand, an unrelated "
+            "location) that doesn't continue what the previous scene was about. If you removed the object or event "
+            "introduced in an earlier scene, a later scene should stop making sense — that's the test.\n"
+            "12. HOOK TIMING: scene 1 must show Mia already mid-action or already reacting to something — never a "
+            "static introduction or slow build-up. The first 1-2 sentences of the script must be short enough to be "
+            "spoken in under 3 seconds, because that is the window before a viewer swipes away.\n\n"
 
             "Required JSON structure:\n"
             "{\n"
             '  \"title\": \"catchy Shorts title without Mia prefix, action-driven, curiosity hook\",\n'
             '  \"script\": \"first person vlog narration, natural spoken, 25-40 seconds\",\n'
+            '  \"point_a\": \"one sentence: Mia\'s situation before anything in the story happens\",\n'
+            '  \"point_b\": \"one sentence: Mia\'s situation at the end, and what concretely changed from point_a\",\n'
             '  \"scenes\": [\n'
-            '    {\"description\": \"SPECIFIC visual description: shot type + exact action + location + Mia expression + camera style\", \"mood\": \"neutral|tense|curious|frightened\"},\n'
-            '    {\"description\": \"...\", \"mood\": \"...\"},\n'
-            '    {\"description\": \"...\", \"mood\": \"...\"},\n'
-            '    {\"description\": \"...\", \"mood\": \"...\"}\n'
+            '    {\"description\": \"SPECIFIC visual description: shot type + exact action + location + Mia expression + camera style\", '
+            '\"follows_from_previous\": \"short phrase naming exactly what this scene continues from the one before it (opening for scene 1)\", '
+            '\"mood\": \"neutral|tense|curious|frightened\"},\n'
+            '    {\"description\": \"...\", \"follows_from_previous\": \"...\", \"mood\": \"...\"},\n'
+            '    {\"description\": \"...\", \"follows_from_previous\": \"...\", \"mood\": \"...\"},\n'
+            '    {\"description\": \"...\", \"follows_from_previous\": \"...\", \"mood\": \"...\"}\n'
             '  ],\n'
             '  \"genre\": \"daily_vlog\"\n'
             "}\n\n"
 
             "Scene description rules:\n"
             "- MUST specify the shot type: wide shot, medium shot, close-up, over-the-shoulder, POV, handheld vlog selfie, tracking shot.\n"
-            "- MUST describe the EXACT action: 'Mia walking out of a coffee shop pushing the door open', 'Mia bending down to take a silver key from a small girl's hand', 'Mia inserting a key into a door lock, her hand trembling slightly'.\n"
+            "- MUST describe the EXACT action, drawn from what THIS scene's own narration segment says — not from "
+            "keywords appearing anywhere else in the script.\n"
             "- MUST include the location and environment: street, apartment building, hallway, room interior.\n"
             "- MUST include Mia's expression and body language: skeptical, confused, shocked, scared.\n"
             "- MUST include camera movement only if it serves the action: 'handheld camera following Mia as she walks', 'close-up tracking shot of the key approaching the lock'.\n"
-            "- NEVER use: 'zoom in on Mia', 'slow pan across Mia', 'Mia standing still', 'static shot of Mia', 'Mia at her desk'.\n"
-            "- If the script mentions a coffee shop → scene 1 shows Mia EXITING the coffee shop, pushing the door, stepping onto the sidewalk.\n"
-            "- If a little girl stops her → scene 2 shows the girl tugging Mia's sleeve, looking up, holding out the key.\n"
-            "- If Mia looks at an apartment building → scene 3 shows Mia looking UP at the building, then WALKING toward the entrance.\n"
-            "- If Mia opens a door → scene 4 shows her hand turning the key, door creaking open, her face reacting to what's inside.\n\n"
+            "- MUST fill in follows_from_previous with the specific object/action/question carried over from the prior scene. "
+            "If you cannot name one, the scene is disconnected and must be rewritten so it continues the story instead.\n"
+            "- NEVER use: 'zoom in on Mia', 'slow pan across Mia', 'Mia standing still', 'static shot of Mia', 'Mia at her desk'.\n\n"
 
             "Title rules:\n"
             "- NO 'Mia:' prefix\n"
@@ -69,6 +79,8 @@ class StoryPlanner:
             "- First person, spoken naturally, like Mia is telling the story directly to her phone camera\n"
             "- Include verbal fillers: 'right?', 'okay?', 'I swear', 'no joke'\n"
             "- 25-40 seconds when read at natural speaking pace\n"
+            "- The opening 1-2 sentences must be short enough to speak in under 3 seconds and must drop the viewer "
+            "already into the moment, not into a slow introduction\n"
             "- NO mention of being AI, generated, virtual, or artificial anywhere in the script\n"
             "- Mia is a real character in a fictional daily-vlog series\n\n"
 
@@ -82,8 +94,9 @@ class StoryPlanner:
             if attempt > 1:
                 prompt += (
                     "\n\nPrevious attempt failed. Return ONLY valid raw JSON. "
-                    "Make sure every scene description shows a SPECIFIC ACTION with a SPECIFIC SHOT TYPE. "
-                    "No zoom-only scenes. No static standing shots."
+                    "Make sure every scene description shows a SPECIFIC ACTION with a SPECIFIC SHOT TYPE, "
+                    "and that every scene's follows_from_previous names something real carried over from the scene "
+                    "before it. No zoom-only scenes. No static standing shots. No disconnected scenes."
                 )
 
             try:
@@ -161,6 +174,14 @@ class StoryPlanner:
         if m:
             result["script"] = m.group(1).replace('\\"', '"').replace("\n", " ").strip()
 
+        m = re.search(r'"point_a"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+        if m:
+            result["point_a"] = m.group(1).replace('\\"', '"').strip()
+
+        m = re.search(r'"point_b"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+        if m:
+            result["point_b"] = m.group(1).replace('\\"', '"').strip()
+
         m = re.search(r'"scenes"\s*:\s*(\[[\s\S]*?\])', text, re.DOTALL)
         if m:
             scenes_text = m.group(1)
@@ -174,7 +195,7 @@ class StoryPlanner:
         return result
 
     def _validate_and_fix(self, data: Dict, user_prompt: str) -> None:
-        """Ensure all required fields exist and scenes are action-driven."""
+        """Ensure all required fields exist and scenes are action-driven and causally linked."""
 
         if "title" not in data or not data["title"]:
             data["title"] = self._generate_title(user_prompt)
@@ -188,6 +209,9 @@ class StoryPlanner:
 
         if "genre" not in data:
             data["genre"] = "daily_vlog"
+
+        data.setdefault("point_a", "")
+        data.setdefault("point_b", "")
 
         # Clean title
         title = str(data["title"]).strip()
@@ -206,17 +230,11 @@ class StoryPlanner:
         # Ensure at least 4 scenes for a dynamic story
         while len(data["scenes"]) < 4:
             data["scenes"].append({
-                "description": "Mia reacting with genuine emotion to the story events, close-up handheld vlog shot, natural lighting",
+                "description": "Mia reacting with genuine emotion to what just happened in the previous scene, "
+                               "close-up handheld vlog shot, natural lighting",
+                "follows_from_previous": "the event from the previous scene",
                 "mood": "neutral"
             })
-
-        # Detect and fix generic/zoom-only scene descriptions
-        script_lower = data["script"].lower()
-        has_specific = any(x in script_lower for x in [
-            "coffee", "girl", "key", "apartment", "street", "phone", "door",
-            "restaurant", "car", "building", "found", "handed", "walked", "opened",
-            "hallway", "photo", "footstep", "ran", "looked", "turned"
-        ])
 
         generic_patterns = [
             r"zoom\s+(in|out)",
@@ -230,43 +248,57 @@ class StoryPlanner:
             r"just\s+looking\s+at\s+camera",
         ]
 
+        # Split the script into per-scene chunks so a generic scene can be replaced with
+        # something derived from ITS OWN narration, not from keywords anywhere else in the
+        # script. The previous version matched keywords like "coffee"/"key"/"hallway" against
+        # the whole script and swapped in a hardcoded example scene (from one specific test
+        # story) whenever they appeared anywhere — which could inject a totally unrelated
+        # scene (e.g. a "hallway full of photographs") into an unrelated story just because the
+        # word "photo" showed up somewhere in the narration. That bug is removed here.
+        script_chunks = self._split_into_chunks(data["script"], len(data["scenes"]))
+
         for i, scene in enumerate(data["scenes"]):
             desc = str(scene.get("description", ""))
-            # Strip AI words from scene descriptions too
             scene["description"] = self._strip_ai_words(desc)
-            desc_lower = desc.lower()
+            scene.setdefault("follows_from_previous", "opening" if i == 0 else "the previous scene's event")
+            desc_lower = scene["description"].lower()
 
             is_generic = any(re.search(p, desc_lower) for p in generic_patterns)
-
-            if is_generic and has_specific and i < 4:
-                logger.warning("Replacing generic/zoom scene %d with action-driven visual", i)
-                if "coffee" in script_lower and i == 0:
-                    scene["description"] = "Wide shot: Mia pushing open a coffee shop door and stepping out onto a busy sidewalk, afternoon sunlight, she checks her phone, handheld vlog camera following her movement"
-                elif "girl" in script_lower and i == 1:
-                    scene["description"] = "Medium shot: A young girl in a hoodie tugging Mia's sleeve on the sidewalk, looking up at her with wide eyes, holding out a small silver key in her open palm, city street background"
-                elif "key" in script_lower and i == 2:
-                    scene["description"] = "Close-up tracking shot: Mia's hand reaching out to take the silver key, then turning it over in her fingers, examining it with a confused expression, shallow depth of field"
-                elif "apartment" in script_lower or "building" in script_lower:
-                    scene["description"] = "Low angle wide shot: Mia looking up at an apartment building facade, then walking toward the entrance with hesitant steps, handheld camera following from behind"
-                elif "door" in script_lower:
-                    scene["description"] = "Over-the-shoulder close-up: Mia's hand inserting the silver key into a door lock, turning it, the door slowly creaking open, her face partially visible showing shock"
-                elif "hallway" in script_lower or "photo" in script_lower:
-                    scene["description"] = "Wide interior shot: Mia stepping into a narrow hallway, walls covered floor-to-ceiling with photographs, she freezes mid-step, her mouth slightly open in disbelief, warm yellow lighting"
-                elif "footstep" in script_lower:
-                    scene["description"] = "Close-up on Mia's face: her eyes widening in fear as she hears footsteps, she slowly turns her head toward the sound, dark hallway behind her"
-                else:
-                    scene["description"] = f"Dynamic action shot showing the key moment from this part of the story: {data['script'][:120]}..., handheld vlog style, natural movement"
+            if is_generic:
+                logger.warning("Scene %d description was generic/static, rebuilding from its own narration", i)
+                own_chunk = script_chunks[i] if i < len(script_chunks) else data["script"][:150]
+                shot_type = ["Wide shot", "Medium handheld shot", "Close-up shot", "Over-the-shoulder shot"][i % 4]
+                scene["description"] = self._strip_ai_words(
+                    f"{shot_type}: Mia physically acting out — {own_chunk.strip()[:180]} — "
+                    "handheld vlog camera, natural continuous movement, expression matching the moment."
+                )
 
         # Final validation: every scene must contain an action verb
         action_verbs = ["walking", "running", "pushing", "opening", "closing", "turning", "looking", "reaching",
                        "picking", "holding", "stepping", "entering", "reacting", "talking", "following",
-                       "pulling", "inserting", "examining", "walking", "stepping", "bending", "taking"]
+                       "pulling", "inserting", "examining", "bending", "taking"]
         for i, scene in enumerate(data["scenes"]):
             desc_lower = str(scene.get("description", "")).lower()
             has_action = any(verb in desc_lower for verb in action_verbs)
             if not has_action:
                 logger.warning("Scene %d still has no action verb, injecting movement", i)
                 scene["description"] = "Handheld tracking shot following Mia as she moves through the scene, " + str(scene.get("description", ""))
+
+    @staticmethod
+    def _split_into_chunks(script: str, n: int) -> List[str]:
+        """Split a script into n roughly-even sentence chunks, in order, for per-scene grounding."""
+        sentences = re.split(r'(?<=[.!?])\s+', script)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        if not sentences:
+            return [script] * max(n, 1)
+        n = max(n, 1)
+        chunk_size = max(1, len(sentences) // n)
+        chunks = []
+        for i in range(0, len(sentences), chunk_size):
+            chunks.append(" ".join(sentences[i:i + chunk_size]))
+        while len(chunks) < n:
+            chunks.append(chunks[-1] if chunks else script)
+        return chunks[:n]
 
     @staticmethod
     def _strip_ai_words(text: str) -> str:
@@ -307,11 +339,8 @@ class StoryPlanner:
         return self._strip_ai_words(title)
 
     def _generate_scenes_from_script(self, script: str) -> List[Dict]:
-        """Break script into 4 action-driven visual scenes."""
-        sentences = re.split(r'(?<=[.!?])\s+', script)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        scenes = []
-        chunk_size = max(1, len(sentences) // 4)
+        """Break script into 4 action-driven, causally-ordered visual scenes."""
+        chunks = self._split_into_chunks(script, 4)
 
         shot_types = [
             "Wide establishing shot",
@@ -320,17 +349,12 @@ class StoryPlanner:
             "Over-the-shoulder reaction shot"
         ]
 
-        for i in range(0, min(len(sentences), 4 * chunk_size), chunk_size):
-            chunk = " ".join(sentences[i:i + chunk_size])
-            desc = f"{shot_types[len(scenes) % 4]}: {chunk[:200]}. Natural handheld camera movement following the action."
+        scenes = []
+        for i, chunk in enumerate(chunks):
+            desc = f"{shot_types[i % 4]}: {chunk[:200]}. Natural handheld camera movement following the action."
             scenes.append({
                 "description": self._strip_ai_words(desc),
-                "mood": "neutral"
-            })
-
-        while len(scenes) < 4:
-            scenes.append({
-                "description": f"{shot_types[len(scenes) % 4]}: Mia reacting emotionally to the story, natural movement, handheld vlog style",
+                "follows_from_previous": "opening" if i == 0 else "the event described in the previous scene",
                 "mood": "neutral"
             })
 
